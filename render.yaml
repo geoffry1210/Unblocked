@@ -1,0 +1,32 @@
+# Render Blueprint — lets Render auto-configure the server service from
+# this file instead of manually filling in dashboard fields (handy on mobile).
+# Deploy: Render dashboard -> New -> Blueprint -> select this repo.
+
+services:
+  - type: web
+    name: unblocked-server
+    runtime: node
+    rootDir: server
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        sync: false   # paste your Neon connection string in the Render dashboard
+      - key: WEB_ORIGIN
+        sync: false   # set once the web frontend has a URL (Phase 2)
+      - key: PORT
+        value: 3001
+  - type: web
+    name: unblocked-web
+    runtime: static
+    rootDir: web
+    plan: free
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_URL
+        sync: false   # e.g. https://unblocked-server.onrender.com
+      - key: VITE_WS_URL
+        sync: false   # e.g. wss://unblocked-server.onrender.com/ws
