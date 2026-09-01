@@ -79,7 +79,7 @@ export function useMarketData(symbol, timeframe) {
         }
 
         if (msg.type === "whale" && msg.symbol === symbol) {
-          const id = `${msg.event.wallet || "unknown"}-${Date.now()}`;
+          const id = `${msg.event.hash || msg.event.from || "unknown"}-${Date.now()}`;
           setWhaleEvents((prev) => [...prev, { ...msg.event, id }]);
           // Auto-expire after 15s so the pulse list doesn't grow forever
           setTimeout(() => {

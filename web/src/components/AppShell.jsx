@@ -12,27 +12,46 @@ const INDICATOR_DEFS = [
   { key: "macd", label: "MACD", color: "#F5B700", type: "pane" },
 ];
 
-function WhalePulseLayer({ events }) {
-  // Positions are illustrative (spread across the visible chart width) —
-  // Phase 3 refines this to place each marker at its actual candle x-position.
+function WhalePulseLayer({ events, candles }) {
+  // Places each marker at the x-position of the candle whose time window
+  // contains the event — event.time comes from CoinRadar as unix seconds,
+  // candle.t is a JS ms timestamp. Falls back to skipping markers whose
+  // event predates the currently loaded candle window (e.g. right after a
+  // symbol/timeframe switch, before the new history has finished loading).
+  if (candles.length === 0) return null;
+  const w = 100 / candles.length;
+
+  function xForTime(eventTimeSec) {
+    const eventMs = eventTimeSec * 1000;
+    let idx = candles.findIndex((c) => c.t > eventMs);
+    if (idx === -1) idx = candles.length - 1; // event is newer than the last candle — pin to the latest
+    if (idx === 0 && candles[0].t > eventMs) return null; // event predates the loaded window
+    return idx * w + w / 2;
+  }
+
   return (
     <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
-      {events.map((e, i) => (
-        <div
-          key={e.id}
-          style={{
-            position: "absolute",
-            left: `${20 + ((i * 17) % 60)}%`,
-            top: "55%",
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            background: "#7C5CFF",
-            animation: "whalePulse 2.2s ease-out",
-          }}
-          title={`${e.event_type || "whale event"} — $${e.amount_usd || "?"}`}
-        />
-      ))}
+      {events.map((e) => {
+        const x = xForTime(e.time);
+        if (x == null) return null;
+        const valLabel = e.value >= 1e6 ? `${(e.value / 1e6).toFixed(2)}M` : e.value >= 1e3 ? `${(e.value / 1e3).toFixed(2)}K` : e.value?.toFixed(2);
+        return (
+          <div
+            key={e.id}
+            style={{
+              position: "absolute",
+              left: `${x}%`,
+              top: "55%",
+              width: 10,
+              height: 10,
+              borderRadius: "50%",
+              background: "#7C5CFF",
+              animation: "whalePulse 2.2s ease-out",
+            }}
+            title={`🐋 ${valLabel} — ${e.from?.slice(0, 8)}... → ${e.to?.slice(0, 8)}...`}
+          />
+        );
+      })}
     </div>
   );
 }
@@ -209,7 +228,7 @@ export function AppShell({ onBack }) {
         </aside>
 
         <main style={{ flex: 1, position: "relative", padding: 16, overflow: "auto" }}>
-          <WhalePulseLayer events={whaleEvents} />
+          <WhalePulseLayer events={whaleEvents} candles={candles} />
           {loading ? (
             <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
           ) : candles.length === 0 ? (
