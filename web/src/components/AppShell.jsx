@@ -3,6 +3,7 @@ import { fetchSymbols } from "../lib/api.js";
 import { useMarketData } from "../lib/useMarketData.js";
 import { sma, ema, bollinger, rsi, macd, vwap, stochRsi } from "../lib/indicators.js";
 import { CandleChart, RSIPane, MACDPane, StochRsiPane } from "./Chart.jsx";
+import { AdSlot } from "./AdSlot.jsx";
 
 const INDICATOR_DEFS = [
   { key: "ma20", label: "MA 20", color: "#F5B700", type: "overlay" },
@@ -284,8 +285,8 @@ export function AppShell({ onBack }) {
         </div>
       </header>
 
-      <div style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <aside style={{ width: 190, borderRight: "1px solid #1D232F", padding: "14px 12px", overflow: "auto" }}>
+      <div className="app-body" style={{ display: "flex", flex: 1, minHeight: 0 }}>
+        <aside className="symbol-sidebar" style={{ width: 190, borderRight: "1px solid #1D232F", padding: "14px 12px", overflow: "auto" }}>
           <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#4A5063", marginBottom: 10, letterSpacing: 1 }}>WATCHLIST</div>
           {symbols.map((s) => (
             <div key={s.pair} onClick={() => setActiveSymbol(s.pair)} style={{ display: "flex", justifyContent: "space-between", padding: "8px 6px", borderRadius: 6, marginBottom: 2, cursor: "pointer", background: s.pair === activeSymbol ? "#191F2A" : "transparent" }}>
@@ -334,9 +335,7 @@ export function AppShell({ onBack }) {
         </main>
       </div>
 
-      <footer style={{ borderTop: "1px solid #1D232F", padding: "8px 20px", fontFamily: "'Manrope', sans-serif", fontSize: 11, color: "#4A5063", textAlign: "center" }}>
-        ad space — kept small, kept out of your way
-      </footer>
+      <AdSlot />
     </div>
   );
 }

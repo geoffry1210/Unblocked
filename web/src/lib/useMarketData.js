@@ -7,7 +7,8 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { fetchCandles } from "./api.js";
 
 const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:3001/ws";
-const RECONNECT_DELAY_MS = 3000;
+const RECONNECT_BASE_MS = 1000;
+const RECONNECT_MAX_MS = 30000;
 
 export function useMarketData(symbol, timeframe) {
   const [candles, setCandles] = useState([]);
@@ -17,6 +18,18 @@ export function useMarketData(symbol, timeframe) {
 
   const wsRef = useRef(null);
   const currentChannelRef = useRef(null);
+  // The connect effect below only runs once (empty deps — intentional, so
+  // we don't tear down and reopen the socket on every symbol/timeframe
+  // change). That means its onmessage closure would otherwise capture
+  // `symbol`/`timeframe` from the very first render and never see updates.
+  // These refs are kept in sync on every change so onmessage always reads
+  // the live values instead of a stale closure.
+  const symbolRef = useRef(symbol);
+  const timeframeRef = useRef(timeframe);
+  useEffect(() => {
+    symbolRef.current = symbol;
+    timeframeRef.current = timeframe;
+  }, [symbol, timeframe]);
 
   // Historical load — runs on every symbol/timeframe change.
   useEffect(() => {
@@ -38,6 +51,7 @@ export function useMarketData(symbol, timeframe) {
   // WebSocket connection — opened once, kept alive across symbol/tf changes.
   useEffect(() => {
     let cancelled = false;
+    let reconnectAttempt = 0;
 
     function connect() {
       const ws = new WebSocket(WS_URL);
@@ -45,8 +59,9 @@ export function useMarketData(symbol, timeframe) {
 
       ws.onopen = () => {
         if (cancelled) return;
+        reconnectAttempt = 0; // reset backoff after a successful connection
         setConnected(true);
-        subscribeToChannel(symbol, timeframe);
+        subscribeToChannel(symbolRef.current, timeframeRef.current);
       };
 
       ws.onmessage = (event) => {
@@ -57,7 +72,7 @@ export function useMarketData(symbol, timeframe) {
           return;
         }
 
-        if (msg.type === "candle" && msg.symbol === symbol && msg.timeframe === timeframe) {
+        if (msg.type === "candle" && msg.symbol === symbolRef.current && msg.timeframe === timeframeRef.current) {
           setCandles((prev) => {
             if (prev.length === 0) return prev;
             const incoming = {
@@ -78,7 +93,7 @@ export function useMarketData(symbol, timeframe) {
           });
         }
 
-        if (msg.type === "whale" && msg.symbol === symbol) {
+        if (msg.type === "whale" && msg.symbol === symbolRef.current) {
           const id = `${msg.event.hash || msg.event.from || "unknown"}-${Date.now()}`;
           setWhaleEvents((prev) => [...prev, { ...msg.event, id }]);
           // Auto-expire after 15s so the pulse list doesn't grow forever
@@ -91,7 +106,9 @@ export function useMarketData(symbol, timeframe) {
       ws.onclose = () => {
         if (cancelled) return;
         setConnected(false);
-        setTimeout(connect, RECONNECT_DELAY_MS);
+        const delay = Math.min(RECONNECT_BASE_MS * 2 ** reconnectAttempt, RECONNECT_MAX_MS);
+        reconnectAttempt += 1;
+        setTimeout(connect, delay);
       };
 
       ws.onerror = () => ws.close();
