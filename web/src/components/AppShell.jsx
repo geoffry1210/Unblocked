@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchSymbols } from "../lib/api.js";
 import { useMarketData } from "../lib/useMarketData.js";
 import { sma, ema, bollinger, rsi, macd, vwap, stochRsi } from "../lib/indicators.js";
-import { CandleChart, RSIPane, MACDPane, StochRsiPane } from "./Chart.jsx";
+import { TradingChart } from "./Chart.jsx";
 import { AdSlot } from "./AdSlot.jsx";
 
 const INDICATOR_DEFS = [
@@ -22,7 +22,7 @@ const DRAW_TOOLS = [
 ];
 
 function drawingsStorageKey(symbol, tf) {
-  return `unblocked.drawings.${symbol}.${tf}`;
+  return `unblocked.drawings.v2.${symbol}.${tf}`;
 }
 
 function loadDrawings(symbol, tf) {
@@ -36,14 +36,8 @@ function loadDrawings(symbol, tf) {
 }
 
 function WhalePulseLayer({ events, candles }) {
-  // Places each marker at the x-position of the candle whose time window
-  // contains the event — event.time comes from CoinRadar as unix seconds,
-  // candle.t is a JS ms timestamp. Falls back to skipping markers whose
-  // event predates the currently loaded candle window (e.g. right after a
-  // symbol/timeframe switch, before the new history has finished loading).
   if (candles.length === 0) return null;
   const w = 100 / candles.length;
-
   function xForTime(eventTimeSec) {
     const eventMs = eventTimeSec * 1000;
     let idx = candles.findIndex((c) => c.t > eventMs);
@@ -51,9 +45,8 @@ function WhalePulseLayer({ events, candles }) {
     if (idx === 0 && candles[0].t > eventMs) return null;
     return idx * w + w / 2;
   }
-
   return (
-    <div style={{ position: "absolute", inset: 0, pointerEvents: "none" }}>
+    <div style={{ position: "absolute", inset: 0, pointerEvents: "none", zIndex: 2 }}>
       {events.map((e) => {
         const x = xForTime(e.time);
         if (x == null) return null;
@@ -61,16 +54,7 @@ function WhalePulseLayer({ events, candles }) {
         return (
           <div
             key={e.id}
-            style={{
-              position: "absolute",
-              left: `${x}%`,
-              top: "55%",
-              width: 10,
-              height: 10,
-              borderRadius: "50%",
-              background: "#7C5CFF",
-              animation: "whalePulse 2.2s ease-out",
-            }}
+            style={{ position: "absolute", left: `${x}%`, top: "30%", width: 10, height: 10, borderRadius: "50%", background: "#7C5CFF", animation: "whalePulse 2.2s ease-out" }}
             title={`🐋 ${valLabel} — ${e.from?.slice(0, 8)}... → ${e.to?.slice(0, 8)}...`}
           />
         );
@@ -111,17 +95,79 @@ function PriceTicker({ candles, connected }) {
   );
 }
 
+// Search bar with autocomplete — the sole way to pick a symbol now that the
+// watchlist sidebar is gone. Keyboard nav (up/down/enter) included since a
+// dropdown you can only tap is annoying on desktop.
+function SymbolSearch({ symbols, activeDisplay, onSelect }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const [highlight, setHighlight] = useState(0);
+  const boxRef = useRef(null);
+
+  const filtered = useMemo(() => {
+    if (!query) return symbols.slice(0, 8);
+    const q = query.toLowerCase();
+    return symbols.filter((s) => s.display.toLowerCase().includes(q)).slice(0, 8);
+  }, [symbols, query]);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (boxRef.current && !boxRef.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  const pick = (s) => {
+    onSelect(s.pair);
+    setQuery("");
+    setOpen(false);
+  };
+
+  const onKeyDown = (e) => {
+    if (!open) return;
+    if (e.key === "ArrowDown") { e.preventDefault(); setHighlight((h) => Math.min(h + 1, filtered.length - 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setHighlight((h) => Math.max(h - 1, 0)); }
+    else if (e.key === "Enter") { e.preventDefault(); if (filtered[highlight]) pick(filtered[highlight]); }
+    else if (e.key === "Escape") setOpen(false);
+  };
+
+  return (
+    <div ref={boxRef} style={{ position: "relative", width: 220 }}>
+      <input
+        value={query}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); setHighlight(0); }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+        placeholder={activeDisplay || "search pair..."}
+        style={{ width: "100%", background: "#131720", border: "1px solid #2A3140", borderRadius: 6, padding: "7px 10px", color: "#E8EAED", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, outline: "none" }}
+      />
+      {open && (
+        <div style={{ position: "absolute", top: "110%", left: 0, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, zIndex: 20, width: 220, maxHeight: 260, overflow: "auto" }}>
+          {filtered.length === 0 && <div style={{ padding: 10, fontSize: 12, color: "#4A5063", fontFamily: "'Manrope', sans-serif" }}>No matches</div>}
+          {filtered.map((s, i) => (
+            <div
+              key={s.pair}
+              onMouseDown={() => pick(s)}
+              onMouseEnter={() => setHighlight(i)}
+              style={{ padding: "8px 10px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: "#E8EAED", cursor: "pointer", background: i === highlight ? "#232A38" : "transparent" }}
+            >
+              {s.display}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AppShell({ onBack }) {
   const [symbols, setSymbols] = useState([]);
   const [symbolsError, setSymbolsError] = useState(null);
   const [activeSymbol, setActiveSymbol] = useState(null);
   const [tf, setTf] = useState("15m");
-  const [query, setQuery] = useState("");
   const [active, setActive] = useState({ ma20: true, ema9: false, bb: false, vwap: false, rsi: true, macd: false, stochrsi: false });
 
-  // Drawing tools — drawTool is which tool is armed (null when off).
-  // drawings is the full list for the current symbol+timeframe; each has
-  // its own id/type/points so multiple can coexist and be removed individually.
   const [drawTool, setDrawTool] = useState(null);
   const [drawings, setDrawings] = useState([]);
   const [pendingPoint, setPendingPoint] = useState(null);
@@ -140,9 +186,6 @@ export function AppShell({ onBack }) {
 
   const { candles, whaleEvents, loading, connected } = useMarketData(activeSymbol || "", tf);
 
-  // Drawings are scoped per symbol+timeframe — load fresh whenever either
-  // changes, and cancel any in-progress drawing (a pending first click
-  // doesn't carry over to a different chart).
   useEffect(() => {
     if (!activeSymbol) return;
     setDrawings(loadDrawings(activeSymbol, tf));
@@ -155,8 +198,7 @@ export function AppShell({ onBack }) {
     try {
       localStorage.setItem(drawingsStorageKey(activeSymbol, tf), JSON.stringify(drawings));
     } catch {
-      // Storage can fail (quota, private browsing) — drawings just won't
-      // persist across reloads in that case, not worth surfacing an error for.
+      // Storage can fail (quota, private browsing) — not worth surfacing.
     }
   }, [drawings, activeSymbol, tf]);
 
@@ -178,12 +220,37 @@ export function AppShell({ onBack }) {
   if (active.ma20) overlays.push({ values: indicators.smaVals, color: "#F5B700" });
   if (active.ema9) overlays.push({ values: indicators.emaVals, color: "#2ED9A0" });
   if (active.bb) {
-    overlays.push({ values: indicators.bbVals.upper, color: "#7C5CFF", dash: "1,1" });
-    overlays.push({ values: indicators.bbVals.lower, color: "#7C5CFF", dash: "1,1" });
+    overlays.push({ values: indicators.bbVals.upper, color: "#7C5CFF", dash: true });
+    overlays.push({ values: indicators.bbVals.lower, color: "#7C5CFF", dash: true });
   }
   if (active.vwap) overlays.push({ values: indicators.vwapVals, color: "#FF9F40" });
 
-  const filtered = symbols.filter((s) => s.display.toLowerCase().includes(query.toLowerCase()));
+  const indicatorPanes = [];
+  if (active.rsi) {
+    indicatorPanes.push({ key: "rsi", lines: [{ values: indicators.rsiVals, color: "#7C5CFF" }], stretchFactor: 1.4 });
+  }
+  if (active.macd) {
+    indicatorPanes.push({
+      key: "macd",
+      lines: [
+        { values: indicators.macdVals.macdLine, color: "#F5B700" },
+        { values: indicators.macdVals.signalLine, color: "#7C5CFF" },
+      ],
+      histogram: { values: indicators.macdVals.histogram, upColor: "#2ED9A055", downColor: "#FF5C7755" },
+      stretchFactor: 1.4,
+    });
+  }
+  if (active.stochrsi) {
+    indicatorPanes.push({
+      key: "stochrsi",
+      lines: [
+        { values: indicators.stochRsiVals.k, color: "#2ED9A0" },
+        { values: indicators.stochRsiVals.d, color: "#F5B700" },
+      ],
+      stretchFactor: 1.4,
+    });
+  }
+
   const toggleIndicator = (key) => setActive((a) => ({ ...a, [key]: !a[key] }));
 
   const selectDrawTool = (key) => {
@@ -191,18 +258,21 @@ export function AppShell({ onBack }) {
     setDrawTool((cur) => (cur === key ? null : key));
   };
 
-  const handleChartClick = (x, y) => {
+  // time is unix seconds (from the chart), price is the real chart price —
+  // both come straight from TradingChart's click handler now.
+  const handleChartClick = (time, price) => {
     if (!drawTool) return;
     const toolDef = DRAW_TOOLS.find((t) => t.key === drawTool);
+    const point = { time, price };
     if (toolDef.clicksNeeded === 1) {
-      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [{ x, y }] }]);
+      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [point] }]);
       setDrawTool(null);
       return;
     }
     if (!pendingPoint) {
-      setPendingPoint({ x, y });
+      setPendingPoint(point);
     } else {
-      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [pendingPoint, { x, y }] }]);
+      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [pendingPoint, point] }]);
       setPendingPoint(null);
       setDrawTool(null);
     }
@@ -226,31 +296,13 @@ export function AppShell({ onBack }) {
   }
 
   const activeDisplay = symbols.find((s) => s.pair === activeSymbol)?.display || activeSymbol;
-  const paneCount = (active.rsi ? 1 : 0) + (active.macd ? 1 : 0) + (active.stochrsi ? 1 : 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 20px", borderBottom: "1px solid #1D232F", flexWrap: "wrap" }}>
         <button onClick={onBack} style={{ background: "none", border: "none", color: "#8B93A3", cursor: "pointer", fontSize: 13 }}>← back</button>
 
-        <div style={{ position: "relative" }}>
-          <input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder={activeDisplay}
-            style={{ background: "#131720", border: "1px solid #2A3140", borderRadius: 6, padding: "6px 10px", color: "#E8EAED", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, width: 130, outline: "none" }}
-          />
-          {query && (
-            <div style={{ position: "absolute", top: "110%", left: 0, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, zIndex: 10, width: 160, overflow: "hidden" }}>
-              {filtered.length === 0 && <div style={{ padding: 10, fontSize: 12, color: "#4A5063", fontFamily: "'Manrope', sans-serif" }}>No matches</div>}
-              {filtered.map((s) => (
-                <div key={s.pair} onClick={() => { setActiveSymbol(s.pair); setQuery(""); }} style={{ padding: "8px 10px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: "#E8EAED", cursor: "pointer" }}>
-                  {s.display}
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+        <SymbolSearch symbols={symbols} activeDisplay={activeDisplay} onSelect={setActiveSymbol} />
 
         <div style={{ display: "flex", gap: 6 }}>
           {["1m", "15m", "1h", "4h", "1d"].map((t) => (
@@ -260,7 +312,7 @@ export function AppShell({ onBack }) {
           ))}
         </div>
 
-        <div style={{ display: "flex", gap: 6 }}>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
           {INDICATOR_DEFS.map((ind) => (
             <button key={ind.key} onClick={() => toggleIndicator(ind.key)} style={{ background: active[ind.key] ? `${ind.color}22` : "transparent", color: active[ind.key] ? ind.color : "#8B93A3", border: "1px solid " + (active[ind.key] ? ind.color + "55" : "#232A38"), borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}>
               {ind.label}
@@ -285,55 +337,43 @@ export function AppShell({ onBack }) {
         </div>
       </header>
 
-      <div className="app-body" style={{ display: "flex", flex: 1, minHeight: 0 }}>
-        <aside className="symbol-sidebar" style={{ width: 190, borderRight: "1px solid #1D232F", padding: "14px 12px", overflow: "auto" }}>
-          <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#4A5063", marginBottom: 10, letterSpacing: 1 }}>WATCHLIST</div>
-          {symbols.map((s) => (
-            <div key={s.pair} onClick={() => setActiveSymbol(s.pair)} style={{ display: "flex", justifyContent: "space-between", padding: "8px 6px", borderRadius: 6, marginBottom: 2, cursor: "pointer", background: s.pair === activeSymbol ? "#191F2A" : "transparent" }}>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 12, color: "#E8EAED" }}>{s.display}</span>
+      {/* Chart region intentionally consumes the large majority of the page —
+          no sidebar competing for width, symbol switching lives entirely in
+          the search box above. */}
+      <main style={{ flex: "1 1 80%", position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
+        <WhalePulseLayer events={whaleEvents} candles={candles} />
+        {loading ? (
+          <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
+        ) : candles.length === 0 ? (
+          <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
+            No historical candles yet for {activeDisplay} — the relay writes candles as they close, so a brand-new symbol needs a little time to build up data.
+          </div>
+        ) : (
+          <TradingChart
+            candles={candles}
+            overlays={overlays}
+            indicatorPanes={indicatorPanes}
+            height="100%"
+            up="#2ED9A0"
+            down="#FF5C77"
+            drawings={drawings}
+            pendingPoint={pendingPoint}
+            drawTool={drawTool}
+            onChartClick={handleChartClick}
+          />
+        )}
+      </main>
+
+      {drawings.length > 0 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 16px 8px" }}>
+          {drawings.map((d) => (
+            <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6, padding: "3px 8px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#8B93A3" }}>
+              {d.type}
+              <span onClick={() => removeDrawing(d.id)} style={{ cursor: "pointer", color: "#FF5C77", fontWeight: 700 }}>×</span>
             </div>
           ))}
-        </aside>
-
-        <main style={{ flex: 1, position: "relative", padding: 16, overflow: "auto" }}>
-          <WhalePulseLayer events={whaleEvents} candles={candles} />
-          {loading ? (
-            <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
-          ) : candles.length === 0 ? (
-            <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
-              No historical candles yet for {activeDisplay} — the relay writes candles as they close, so a brand-new symbol needs a little time to build up data.
-            </div>
-          ) : (
-            <>
-              <CandleChart
-                candles={candles}
-                overlays={overlays}
-                height={paneCount > 0 ? 300 : 420}
-                up="#2ED9A0"
-                down="#FF5C77"
-                drawings={drawings}
-                pendingPoint={pendingPoint}
-                drawTool={drawTool}
-                onChartClick={handleChartClick}
-              />
-              {active.rsi && <RSIPane values={indicators.rsiVals} height={70} />}
-              {active.macd && <MACDPane data={indicators.macdVals} height={70} />}
-              {active.stochrsi && <StochRsiPane k={indicators.stochRsiVals.k} d={indicators.stochRsiVals.d} height={70} />}
-
-              {drawings.length > 0 && (
-                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
-                  {drawings.map((d) => (
-                    <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6, padding: "3px 8px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#8B93A3" }}>
-                      {d.type}
-                      <span onClick={() => removeDrawing(d.id)} style={{ cursor: "pointer", color: "#FF5C77", fontWeight: 700 }}>×</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </>
-          )}
-        </main>
-      </div>
+        </div>
+      )}
 
       <AdSlot />
     </div>
