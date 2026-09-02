@@ -13,7 +13,13 @@ function normLine(values, min, max, len) {
   return pts.join(" ");
 }
 
-export function CandleChart({ candles, overlays, height, up, down, drawLine, onChartClick, drawing }) {
+const fmt = (p) => (p < 10 ? p.toFixed(4) : p.toFixed(2));
+const FIB_LEVELS = [0, 0.236, 0.382, 0.5, 0.618, 0.786, 1];
+
+// drawings: [{ id, type: "trendline" | "horizontal" | "fib", points: [{x,y}, ...] }]
+// points are in the same 0-100 click-space as the SVG viewBox — the y=0..72
+// sub-range is the price zone (see candle rendering below), y=72..100 is volume/padding.
+export function CandleChart({ candles, overlays, height, up, down, drawings = [], pendingPoint, drawTool, onChartClick }) {
   const svgRef = useRef(null);
   if (candles.length === 0) return null;
 
@@ -31,8 +37,12 @@ export function CandleChart({ candles, overlays, height, up, down, drawLine, onC
   const maxV = Math.max(...candles.map((c) => c.v));
   const w = 100 / candles.length;
 
+  // Inverse of the candle-plotting transform (y = ((max - price) / range) * 72),
+  // so drawings clicked in screen space can be labeled with real prices.
+  const priceAtY = (y) => max - (y / 72) * range;
+
   const handleClick = (e) => {
-    if (!drawing) return;
+    if (!drawTool) return;
     const rect = svgRef.current.getBoundingClientRect();
     const x = ((e.clientX - rect.left) / rect.width) * 100;
     const y = ((e.clientY - rect.top) / rect.height) * 100;
@@ -45,7 +55,7 @@ export function CandleChart({ candles, overlays, height, up, down, drawLine, onC
       viewBox="0 0 100 100"
       preserveAspectRatio="none"
       onClick={handleClick}
-      style={{ width: "100%", height, cursor: drawing ? "crosshair" : "default" }}
+      style={{ width: "100%", height, cursor: drawTool ? "crosshair" : "default" }}
     >
       {candles.map((c, i) => {
         const x = i * w + w * 0.2;
@@ -67,6 +77,7 @@ export function CandleChart({ candles, overlays, height, up, down, drawLine, onC
           </g>
         );
       })}
+
       {overlays.map((o, idx) => (
         <polyline
           key={idx}
@@ -78,9 +89,47 @@ export function CandleChart({ candles, overlays, height, up, down, drawLine, onC
           opacity={0.9}
         />
       ))}
-      {drawLine && (
-        <line x1={drawLine.x1} y1={drawLine.y1} x2={drawLine.x2} y2={drawLine.y2} stroke="#F5B700" strokeWidth={0.4} />
-      )}
+
+      {drawings.map((d) => {
+        if (d.type === "trendline") {
+          const [p1, p2] = d.points;
+          return <line key={d.id} x1={p1.x} y1={p1.y} x2={p2.x} y2={p2.y} stroke="#F5B700" strokeWidth={0.4} />;
+        }
+        if (d.type === "horizontal") {
+          const [p1] = d.points;
+          const price = priceAtY(p1.y);
+          return (
+            <g key={d.id}>
+              <line x1="0" y1={p1.y} x2="100" y2={p1.y} stroke="#2ED9A0" strokeWidth={0.35} strokeDasharray="1.5,1" />
+              <text x="1" y={p1.y - 1} fontSize="2.4" fill="#2ED9A0">{fmt(price)}</text>
+            </g>
+          );
+        }
+        if (d.type === "fib") {
+          const [p1, p2] = d.points;
+          const priceA = priceAtY(p1.y);
+          const priceB = priceAtY(p2.y);
+          const high = Math.max(priceA, priceB);
+          const low = Math.min(priceA, priceB);
+          return (
+            <g key={d.id}>
+              {FIB_LEVELS.map((lv) => {
+                const price = high - lv * (high - low);
+                const y = ((max - price) / range) * 72;
+                return (
+                  <g key={lv}>
+                    <line x1="0" y1={y} x2="100" y2={y} stroke="#7C5CFF" strokeWidth={0.3} strokeDasharray="1,1" opacity={0.7} />
+                    <text x="1" y={y - 1} fontSize="2.2" fill="#7C5CFF">{(lv * 100).toFixed(1)}% {fmt(price)}</text>
+                  </g>
+                );
+              })}
+            </g>
+          );
+        }
+        return null;
+      })}
+
+      {pendingPoint && <circle cx={pendingPoint.x} cy={pendingPoint.y} r="0.8" fill="#F5B700" />}
     </svg>
   );
 }
@@ -131,6 +180,26 @@ export function MACDPane({ data, height }) {
         })}
         <polyline points={scale(data.macdLine)} fill="none" stroke="#F5B700" strokeWidth="0.6" />
         <polyline points={scale(data.signalLine)} fill="none" stroke="#7C5CFF" strokeWidth="0.6" />
+      </svg>
+    </div>
+  );
+}
+
+export function StochRsiPane({ k, d, height }) {
+  if (k.length === 0) return null;
+  const scale = (line) =>
+    normLine(line, 0, 100, line.length).split(" ").filter(Boolean).map((p) => {
+      const [x, y] = p.split(",").map(Number);
+      return `${x},${(y / 72) * 100}`;
+    }).join(" ");
+  return (
+    <div style={{ marginTop: 8 }}>
+      <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: "#4A5063", padding: "0 4px" }}>Stoch RSI (14,14,3)</div>
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: "100%", height }}>
+        <line x1="0" y1="20" x2="100" y2="20" stroke="#2A3140" strokeWidth="0.3" strokeDasharray="1,1" />
+        <line x1="0" y1="80" x2="100" y2="80" stroke="#2A3140" strokeWidth="0.3" strokeDasharray="1,1" />
+        <polyline points={scale(k)} fill="none" stroke="#2ED9A0" strokeWidth="0.6" />
+        <polyline points={scale(d)} fill="none" stroke="#F5B700" strokeWidth="0.6" />
       </svg>
     </div>
   );

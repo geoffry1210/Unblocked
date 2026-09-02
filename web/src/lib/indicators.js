@@ -84,3 +84,51 @@ export function macd(closes) {
   const histogram = closes.map((_, i) => (macdLine[i] != null && signalLine[i] != null ? macdLine[i] - signalLine[i] : null));
   return { macdLine, signalLine, histogram };
 }
+
+// VWAP — volume-weighted average price, cumulative from the start of the
+// loaded candle window. Resets whenever the candle window changes (symbol
+// or timeframe switch), same as most charting tools default to session
+// VWAP; a rolling/session-boundary version is a nice-to-have beyond v1.
+export function vwap(candles) {
+  const out = new Array(candles.length).fill(null);
+  let cumPV = 0, cumV = 0;
+  for (let i = 0; i < candles.length; i++) {
+    const typicalPrice = (candles[i].h + candles[i].l + candles[i].c) / 3;
+    cumPV += typicalPrice * candles[i].v;
+    cumV += candles[i].v;
+    out[i] = cumV === 0 ? null : cumPV / cumV;
+  }
+  return out;
+}
+
+// Stochastic RSI — the stochastic formula applied to RSI's own output
+// (not price), so it needs an RSI series as input, not raw candles. This
+// is a different indicator from a plain Stochastic Oscillator (which uses
+// high/low price), and reacts faster / ranges more often at the extremes.
+export function stochRsi(closes, rsiPeriod = 14, stochPeriod = 14, dPeriod = 3) {
+  const rsiVals = rsi(closes, rsiPeriod);
+  const n = closes.length;
+  const k = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    if (rsiVals[i] == null) continue;
+    // Need `stochPeriod` consecutive non-null RSI values ending at i.
+    const start = i - stochPeriod + 1;
+    if (start < 0 || rsiVals[start] == null) continue;
+    let hi = -Infinity, lo = Infinity;
+    for (let j = start; j <= i; j++) {
+      if (rsiVals[j] > hi) hi = rsiVals[j];
+      if (rsiVals[j] < lo) lo = rsiVals[j];
+    }
+    const range = hi - lo;
+    k[i] = range === 0 ? 0 : ((rsiVals[i] - lo) / range) * 100;
+  }
+  const d = new Array(n).fill(null);
+  for (let i = 0; i < n; i++) {
+    const start = i - dPeriod + 1;
+    if (start < 0 || k[start] == null) continue;
+    let sum = 0;
+    for (let j = start; j <= i; j++) sum += k[j];
+    d[i] = sum / dPeriod;
+  }
+  return { k, d };
+}

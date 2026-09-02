@@ -1,16 +1,38 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchSymbols } from "../lib/api.js";
 import { useMarketData } from "../lib/useMarketData.js";
-import { sma, ema, bollinger, rsi, macd } from "../lib/indicators.js";
-import { CandleChart, RSIPane, MACDPane } from "./Chart.jsx";
+import { sma, ema, bollinger, rsi, macd, vwap, stochRsi } from "../lib/indicators.js";
+import { CandleChart, RSIPane, MACDPane, StochRsiPane } from "./Chart.jsx";
 
 const INDICATOR_DEFS = [
   { key: "ma20", label: "MA 20", color: "#F5B700", type: "overlay" },
   { key: "ema9", label: "EMA 9", color: "#2ED9A0", type: "overlay" },
   { key: "bb", label: "Bollinger", color: "#7C5CFF", type: "overlay" },
+  { key: "vwap", label: "VWAP", color: "#FF9F40", type: "overlay" },
   { key: "rsi", label: "RSI", color: "#7C5CFF", type: "pane" },
   { key: "macd", label: "MACD", color: "#F5B700", type: "pane" },
+  { key: "stochrsi", label: "Stoch RSI", color: "#2ED9A0", type: "pane" },
 ];
+
+const DRAW_TOOLS = [
+  { key: "trendline", label: "✎ trendline", clicksNeeded: 2 },
+  { key: "horizontal", label: "— h-ray", clicksNeeded: 1 },
+  { key: "fib", label: "◇ fib", clicksNeeded: 2 },
+];
+
+function drawingsStorageKey(symbol, tf) {
+  return `unblocked.drawings.${symbol}.${tf}`;
+}
+
+function loadDrawings(symbol, tf) {
+  try {
+    const raw = localStorage.getItem(drawingsStorageKey(symbol, tf));
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 function WhalePulseLayer({ events, candles }) {
   // Places each marker at the x-position of the candle whose time window
@@ -24,8 +46,8 @@ function WhalePulseLayer({ events, candles }) {
   function xForTime(eventTimeSec) {
     const eventMs = eventTimeSec * 1000;
     let idx = candles.findIndex((c) => c.t > eventMs);
-    if (idx === -1) idx = candles.length - 1; // event is newer than the last candle — pin to the latest
-    if (idx === 0 && candles[0].t > eventMs) return null; // event predates the loaded window
+    if (idx === -1) idx = candles.length - 1;
+    if (idx === 0 && candles[0].t > eventMs) return null;
     return idx * w + w / 2;
   }
 
@@ -94,12 +116,15 @@ export function AppShell({ onBack }) {
   const [activeSymbol, setActiveSymbol] = useState(null);
   const [tf, setTf] = useState("15m");
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState({ ma20: true, ema9: false, bb: false, rsi: true, macd: false });
-  const [drawing, setDrawing] = useState(false);
-  const [drawLine, setDrawLine] = useState(null);
+  const [active, setActive] = useState({ ma20: true, ema9: false, bb: false, vwap: false, rsi: true, macd: false, stochrsi: false });
+
+  // Drawing tools — drawTool is which tool is armed (null when off).
+  // drawings is the full list for the current symbol+timeframe; each has
+  // its own id/type/points so multiple can coexist and be removed individually.
+  const [drawTool, setDrawTool] = useState(null);
+  const [drawings, setDrawings] = useState([]);
   const [pendingPoint, setPendingPoint] = useState(null);
 
-  // Load the real symbol list from the backend on mount.
   useEffect(() => {
     fetchSymbols()
       .then((rows) => {
@@ -114,14 +139,36 @@ export function AppShell({ onBack }) {
 
   const { candles, whaleEvents, loading, connected } = useMarketData(activeSymbol || "", tf);
 
+  // Drawings are scoped per symbol+timeframe — load fresh whenever either
+  // changes, and cancel any in-progress drawing (a pending first click
+  // doesn't carry over to a different chart).
+  useEffect(() => {
+    if (!activeSymbol) return;
+    setDrawings(loadDrawings(activeSymbol, tf));
+    setPendingPoint(null);
+    setDrawTool(null);
+  }, [activeSymbol, tf]);
+
+  useEffect(() => {
+    if (!activeSymbol) return;
+    try {
+      localStorage.setItem(drawingsStorageKey(activeSymbol, tf), JSON.stringify(drawings));
+    } catch {
+      // Storage can fail (quota, private browsing) — drawings just won't
+      // persist across reloads in that case, not worth surfacing an error for.
+    }
+  }, [drawings, activeSymbol, tf]);
+
   const closes = candles.map((c) => c.c);
   const indicators = useMemo(
     () => ({
       smaVals: sma(closes, 20),
       emaVals: ema(closes, 9),
       bbVals: bollinger(closes, 20, 2),
+      vwapVals: vwap(candles),
       rsiVals: rsi(closes, 14),
       macdVals: macd(closes),
+      stochRsiVals: stochRsi(closes, 14, 14, 3),
     }),
     [candles]
   );
@@ -133,20 +180,34 @@ export function AppShell({ onBack }) {
     overlays.push({ values: indicators.bbVals.upper, color: "#7C5CFF", dash: "1,1" });
     overlays.push({ values: indicators.bbVals.lower, color: "#7C5CFF", dash: "1,1" });
   }
+  if (active.vwap) overlays.push({ values: indicators.vwapVals, color: "#FF9F40" });
 
   const filtered = symbols.filter((s) => s.display.toLowerCase().includes(query.toLowerCase()));
   const toggleIndicator = (key) => setActive((a) => ({ ...a, [key]: !a[key] }));
 
+  const selectDrawTool = (key) => {
+    setPendingPoint(null);
+    setDrawTool((cur) => (cur === key ? null : key));
+  };
+
   const handleChartClick = (x, y) => {
+    if (!drawTool) return;
+    const toolDef = DRAW_TOOLS.find((t) => t.key === drawTool);
+    if (toolDef.clicksNeeded === 1) {
+      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [{ x, y }] }]);
+      setDrawTool(null);
+      return;
+    }
     if (!pendingPoint) {
       setPendingPoint({ x, y });
-      setDrawLine({ x1: x, y1: y, x2: x, y2: y });
     } else {
-      setDrawLine({ x1: pendingPoint.x, y1: pendingPoint.y, x2: x, y2: y });
+      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [pendingPoint, { x, y }] }]);
       setPendingPoint(null);
-      setDrawing(false);
+      setDrawTool(null);
     }
   };
+
+  const removeDrawing = (id) => setDrawings((prev) => prev.filter((d) => d.id !== id));
 
   if (symbolsError) {
     return (
@@ -164,6 +225,7 @@ export function AppShell({ onBack }) {
   }
 
   const activeDisplay = symbols.find((s) => s.pair === activeSymbol)?.display || activeSymbol;
+  const paneCount = (active.rsi ? 1 : 0) + (active.macd ? 1 : 0) + (active.stochrsi ? 1 : 0);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -205,12 +267,17 @@ export function AppShell({ onBack }) {
           ))}
         </div>
 
-        <button onClick={() => { setDrawing((d) => !d); setPendingPoint(null); if (drawing) setDrawLine(null); }} style={{ background: drawing ? "#F5B70022" : "transparent", color: drawing ? "#F5B700" : "#8B93A3", border: "1px solid " + (drawing ? "#F5B70055" : "#232A38"), borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}>
-          {drawing ? (pendingPoint ? "click end point" : "click start point") : "✎ trendline"}
-        </button>
-        {drawLine && !drawing && (
-          <button onClick={() => setDrawLine(null)} style={{ background: "none", border: "none", color: "#4A5063", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}>clear</button>
-        )}
+        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          {DRAW_TOOLS.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => selectDrawTool(t.key)}
+              style={{ background: drawTool === t.key ? "#F5B70022" : "transparent", color: drawTool === t.key ? "#F5B700" : "#8B93A3", border: "1px solid " + (drawTool === t.key ? "#F5B70055" : "#232A38"), borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}
+            >
+              {drawTool === t.key ? (pendingPoint ? "click 2nd pt" : t.clicksNeeded === 1 ? "click point" : "click 1st pt") : t.label}
+            </button>
+          ))}
+        </div>
 
         <div style={{ marginLeft: "auto" }}>
           <PriceTicker candles={candles} connected={connected} />
@@ -237,9 +304,31 @@ export function AppShell({ onBack }) {
             </div>
           ) : (
             <>
-              <CandleChart candles={candles} overlays={overlays} height={active.rsi || active.macd ? 300 : 420} up="#2ED9A0" down="#FF5C77" drawLine={drawLine} drawing={drawing} onChartClick={handleChartClick} />
+              <CandleChart
+                candles={candles}
+                overlays={overlays}
+                height={paneCount > 0 ? 300 : 420}
+                up="#2ED9A0"
+                down="#FF5C77"
+                drawings={drawings}
+                pendingPoint={pendingPoint}
+                drawTool={drawTool}
+                onChartClick={handleChartClick}
+              />
               {active.rsi && <RSIPane values={indicators.rsiVals} height={70} />}
               {active.macd && <MACDPane data={indicators.macdVals} height={70} />}
+              {active.stochrsi && <StochRsiPane k={indicators.stochRsiVals.k} d={indicators.stochRsiVals.d} height={70} />}
+
+              {drawings.length > 0 && (
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 10 }}>
+                  {drawings.map((d) => (
+                    <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6, padding: "3px 8px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#8B93A3" }}>
+                      {d.type}
+                      <span onClick={() => removeDrawing(d.id)} style={{ cursor: "pointer", color: "#FF5C77", fontWeight: 700 }}>×</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </>
           )}
         </main>
