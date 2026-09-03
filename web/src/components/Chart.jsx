@@ -89,6 +89,10 @@ function toBoundsData(candles, min, max) {
  * Drawings use {time (unix seconds), price} points instead of screen
  * percentages, so they stay pinned to the right spot through pan/zoom.
  * Supported types: trendline, horizontal, fib, rectangle, text.
+ *
+ * onLoadMore: called (at most once per pan gesture) when the visible range
+ * scrolls near the left edge of what's currently loaded — this is how
+ * backfilled history further back than the initial page gets pulled in.
  */
 export function TradingChart({
   candles,
@@ -101,6 +105,7 @@ export function TradingChart({
   pendingPoint,
   drawTool,
   onChartClick,
+  onLoadMore,
 }) {
   const containerRef = useRef(null);
   const overlaySvgRef = useRef(null);
@@ -109,15 +114,17 @@ export function TradingChart({
   const volumeSeriesRef = useRef(null);
   const overlaySeriesRef = useRef([]);
   const paneSeriesRef = useRef({});
-  const paneLinesRef = useRef({}); // key -> { series, priceLines[] } for cleanup of createPriceLine refLines
   const redrawDrawingsRef = useRef(() => {});
   const drawToolRef = useRef(drawTool);
   const onChartClickRef = useRef(onChartClick);
+  const onLoadMoreRef = useRef(onLoadMore);
+  const loadMoreArmedRef = useRef(true); // debounce: only fire once per approach to the edge
 
   useEffect(() => {
     drawToolRef.current = drawTool;
     onChartClickRef.current = onChartClick;
-  }, [drawTool, onChartClick]);
+    onLoadMoreRef.current = onLoadMore;
+  }, [drawTool, onChartClick, onLoadMore]);
 
   // ---- create chart once ----
   useLayoutEffect(() => {
@@ -154,6 +161,23 @@ export function TradingChart({
     const redraw = () => redrawDrawingsRef.current();
     chart.timeScale().subscribeVisibleTimeRangeChange(redraw);
     chart.subscribeCrosshairMove(redraw);
+
+    // Pan-to-load-more: when the visible logical range's left edge gets
+    // within 20 bars of the start of loaded data, ask the parent for an
+    // older page. loadMoreArmedRef prevents re-firing on every pixel of
+    // the same pan gesture — it re-arms once the user scrolls back away
+    // from the edge (or once new data actually arrives and shifts things).
+    chart.timeScale().subscribeVisibleLogicalRangeChange((range) => {
+      if (!range || !onLoadMoreRef.current) return;
+      if (range.from < 20) {
+        if (loadMoreArmedRef.current) {
+          loadMoreArmedRef.current = false;
+          onLoadMoreRef.current();
+        }
+      } else {
+        loadMoreArmedRef.current = true;
+      }
+    });
 
     return () => {
       chart.remove();

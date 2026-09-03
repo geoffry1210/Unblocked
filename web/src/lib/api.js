@@ -6,8 +6,12 @@ export async function fetchSymbols() {
   return res.json();
 }
 
-export async function fetchCandles(symbol, timeframe, limit = 200) {
-  const params = new URLSearchParams({ symbol, tf: timeframe, limit });
+// exchange/marketType MUST be passed now that multiple exchanges/markets
+// share the same pair names — omitting them used to silently fall back to
+// binance/spot server-side regardless of what the user actually selected.
+export async function fetchCandles(symbol, timeframe, { exchange = "binance", marketType = "spot", limit = 1000, before } = {}) {
+  const params = new URLSearchParams({ symbol, tf: timeframe, exchange, marketType, limit });
+  if (before) params.set("before", before);
   const res = await fetch(`${API_URL}/candles?${params}`);
   if (!res.ok) throw new Error("Failed to fetch candles");
   const rows = await res.json();
