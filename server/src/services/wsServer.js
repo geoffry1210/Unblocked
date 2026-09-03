@@ -1,19 +1,19 @@
 // WebSocket server browser clients connect to for live candle updates.
 //
 // Protocol (client -> server):
-//   { "type": "subscribe",   "symbol": "BTCUSDT", "timeframe": "15m" }
-//   { "type": "unsubscribe", "symbol": "BTCUSDT", "timeframe": "15m" }
+//   { "type": "subscribe",   "exchange": "binance", "marketType": "spot", "symbol": "BTCUSDT", "timeframe": "15m" }
+//   { "type": "unsubscribe", "exchange": "binance", "marketType": "spot", "symbol": "BTCUSDT", "timeframe": "15m" }
 //
 // Protocol (server -> client):
-//   { "type": "candle", "symbol": "BTCUSDT", "timeframe": "15m", "candle": {...}, "closed": false }
+//   { "type": "candle", "exchange": "binance", "marketType": "spot", "symbol": "BTCUSDT", "timeframe": "15m", "candle": {...}, "closed": false }
 //   { "type": "whale",  "symbol": "BTCUSDT", "event": {...} }
 //
-// One client can subscribe to multiple symbol+timeframe channels at once
-// (e.g. main chart + watchlist mini-charts).
+// One client can subscribe to multiple exchange+marketType+symbol+timeframe
+// channels at once (e.g. main chart + watchlist mini-charts).
 
 import { WebSocketServer } from "ws";
 
-const channelKey = (symbol, timeframe) => `${symbol}:${timeframe}`;
+const channelKey = (exchange, marketType, symbol, timeframe) => `${exchange}:${marketType}:${symbol}:${timeframe}`;
 
 export function attachWebSocketServer(httpServer) {
   const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
@@ -32,9 +32,13 @@ export function attachWebSocketServer(httpServer) {
         return; // ignore malformed messages
       }
 
+      // exchange/marketType default to binance/spot so older clients (or
+      // ones that haven't been updated yet) keep working unchanged.
       const { type, symbol, timeframe } = msg;
+      const exchange = msg.exchange || "binance";
+      const marketType = msg.marketType || "spot";
       if (!symbol || !timeframe) return;
-      const key = channelKey(symbol, timeframe);
+      const key = channelKey(exchange, marketType, symbol, timeframe);
 
       if (type === "subscribe") {
         if (!channels.has(key)) channels.set(key, new Set());
@@ -56,25 +60,25 @@ export function attachWebSocketServer(httpServer) {
     });
   });
 
-  // Called by binanceRelay.js on every tick (open or closed candle)
-  function broadcastCandle(symbol, timeframe, candle, closed) {
-    const key = channelKey(symbol, timeframe);
+  // Called by an exchange adapter on every tick (open or closed candle)
+  function broadcastCandle(exchange, marketType, symbol, timeframe, candle, closed) {
+    const key = channelKey(exchange, marketType, symbol, timeframe);
     const clients = channels.get(key);
     if (!clients || clients.size === 0) return;
 
-    const payload = JSON.stringify({ type: "candle", symbol, timeframe, candle, closed });
+    const payload = JSON.stringify({ type: "candle", exchange, marketType, symbol, timeframe, candle, closed });
     for (const client of clients) {
       if (client.readyState === client.OPEN) client.send(payload);
     }
   }
 
-  // Called when a whale event comes in from CoinRadar (Phase 3)
+  // Called when a whale event comes in from CoinRadar (Phase 3). Whale
+  // events are on-chain/ticker-based, not exchange-specific, so this
+  // broadcasts to every channel for the symbol regardless of which
+  // exchange or market type the client currently has open.
   function broadcastWhaleEvent(symbol, event) {
-    // Broadcast to every timeframe channel for this symbol — the marker
-    // is timestamp-based, so the frontend places it correctly regardless
-    // of which timeframe is currently displayed.
     for (const [key, clients] of channels.entries()) {
-      if (!key.startsWith(`${symbol}:`)) continue;
+      if (!key.includes(`:${symbol}:`)) continue;
       const payload = JSON.stringify({ type: "whale", symbol, event });
       for (const client of clients) {
         if (client.readyState === client.OPEN) client.send(payload);

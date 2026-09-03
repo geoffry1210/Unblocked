@@ -1,12 +1,11 @@
 // Unblocked server — entry point
-// Phase 1: fully wired — Binance relay, REST API, WebSocket server.
 
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import { createServer } from "http";
 
-import { startBinanceRelay } from "./services/binanceRelay.js";
+import { startAllRelays } from "./services/exchanges/index.js";
 import { attachWebSocketServer } from "./services/wsServer.js";
 import { startWhaleAlertPoller } from "./services/whaleAlertPoller.js";
 import candlesRouter from "./routes/candles.js";
@@ -24,17 +23,20 @@ app.use("/symbols", symbolsRouter);
 const server = createServer(app);
 
 // Attach the WS server first — it hands back broadcast functions the
-// relay needs to push live ticks to subscribed clients.
+// exchange relays need to push live ticks to subscribed clients.
 const { broadcastCandle, broadcastWhaleEvent } = attachWebSocketServer(server);
 
-startBinanceRelay({ broadcastCandle }).catch((err) => {
-  console.error("Failed to start Binance relay", err);
+startAllRelays({ broadcastCandle }).catch((err) => {
+  console.error("Failed to start exchange relays", err);
 });
 
-// Phase 3 — poll CoinRadar's /api/whale/:ticker for each active symbol and
-// broadcast new events to subscribed chart clients.
+// Poll CoinRadar's /api/whale/:ticker for each unique tracked ticker
+// (deduped across exchanges — whale events are on-chain/ticker-based, not
+// exchange-specific, so there's no reason to poll the same ticker twice
+// just because it's listed on both Binance and Bybit) and broadcast new
+// events to subscribed chart clients.
 pool
-  .query("SELECT pair FROM symbols WHERE active = true")
+  .query("SELECT DISTINCT pair FROM symbols WHERE active = true")
   .then(({ rows }) => {
     startWhaleAlertPoller({
       symbols: rows.map((r) => r.pair),
