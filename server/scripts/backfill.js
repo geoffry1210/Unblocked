@@ -30,6 +30,14 @@
 // Safe to re-run any time — upsertCandle is an ON CONFLICT DO UPDATE, so
 // re-running just re-fills gaps / refreshes overlapping ranges, it never
 // duplicates rows.
+//
+// Network resilience: every request has a hard 15s timeout via
+// AbortController. Plain fetch() has NO built-in timeout — over an
+// unstable connection (mobile data, VPN) a stalled TCP connection can hang
+// forever with no error, which is exactly what silently froze an earlier
+// run partway through. Now a stalled request aborts, retries, and if it
+// keeps failing, that one symbol/timeframe is marked FAILED and the script
+// moves on instead of hanging.
 
 import { pool } from "../src/db/pool.js";
 import { upsertCandle } from "../src/db/candles.js";
@@ -43,16 +51,24 @@ const DEPTH_POLICY = {
   "1m": { mode: "window", days: 90 },
 };
 
+const FETCH_TIMEOUT_MS = 15000;
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function fetchJson(url, { retries = 2 } = {}) {
+async function fetchJson(url, { retries = 3 } = {}) {
   for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(timer);
       if (!res.ok) throw new Error(`HTTP ${res.status} for ${url}`);
       return await res.json();
     } catch (err) {
-      if (attempt === retries) throw err;
+      clearTimeout(timer);
+      const timedOut = err.name === "AbortError";
+      const label = timedOut ? `timed out after ${FETCH_TIMEOUT_MS}ms` : err.message;
+      if (attempt === retries) throw new Error(label);
       await sleep(500 * (attempt + 1));
     }
   }
