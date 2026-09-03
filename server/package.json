@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
-    "db:migrate": "psql $DATABASE_URL -f schema.sql"
+    "db:migrate": "psql $DATABASE_URL -f schema.sql",
+    "backfill": "node scripts/backfill.js"
   },
   "dependencies": {
     "express": "^4.19.2",

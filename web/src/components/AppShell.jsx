@@ -27,8 +27,19 @@ const DRAW_TOOLS = [
   { key: "text", label: "T note", clicksNeeded: 1 },
 ];
 
-function drawingsStorageKey(symbol, tf) {
-  return `unblocked.drawings.v2.${symbol}.${tf}`;
+const EXCHANGE_LABELS = { binance: "Binance", bybit: "Bybit", bitunix: "Bitunix", mexc: "MEXC", weex: "Weex" };
+const MARKET_TYPE_LABELS = { spot: "Spot", perp: "Perp" };
+
+// A single symbol is now identified by (exchange, marketType, pair) — the
+// same pair (e.g. BTCUSDT) exists identically-named across every exchange
+// and market type, so this composite key is what actually disambiguates
+// selection, storage, and data fetching everywhere below.
+function symbolKey(s) {
+  return s ? `${s.exchange}:${s.marketType}:${s.pair}` : "";
+}
+
+function drawingsStorageKey(activeSymbol, tf) {
+  return `unblocked.drawings.v3.${symbolKey(activeSymbol)}.${tf}`;
 }
 function indicatorConfigStorageKey() {
   return "unblocked.indicators.v1";
@@ -112,16 +123,23 @@ function PriceTicker({ candles, connected }) {
   );
 }
 
-function SymbolSearch({ symbols, activeDisplay, onSelect }) {
+// Search bar with autocomplete. Each row now shows exchange + market type
+// alongside the pair (e.g. "BTC/USDT · Binance · Spot") since the same
+// pair name exists identically across every exchange/market combo — the
+// display field alone ("BTC/USDT") is no longer enough to tell them apart.
+function SymbolSearch({ symbols, activeLabel, onSelect }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [highlight, setHighlight] = useState(0);
   const boxRef = useRef(null);
 
+  const labelFor = (s) => `${s.display} · ${EXCHANGE_LABELS[s.exchange] || s.exchange} · ${MARKET_TYPE_LABELS[s.marketType] || s.marketType}`;
+
   const filtered = useMemo(() => {
-    if (!query) return symbols.slice(0, 8);
+    if (!query) return symbols.slice(0, 10);
     const q = query.toLowerCase();
-    return symbols.filter((s) => s.display.toLowerCase().includes(q)).slice(0, 8);
+    return symbols.filter((s) => labelFor(s).toLowerCase().includes(q)).slice(0, 10);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [symbols, query]);
 
   useEffect(() => {
@@ -133,7 +151,7 @@ function SymbolSearch({ symbols, activeDisplay, onSelect }) {
   }, []);
 
   const pick = (s) => {
-    onSelect(s.pair);
+    onSelect(s);
     setQuery("");
     setOpen(false);
   };
@@ -147,26 +165,26 @@ function SymbolSearch({ symbols, activeDisplay, onSelect }) {
   };
 
   return (
-    <div ref={boxRef} style={{ position: "relative", width: 200 }}>
+    <div ref={boxRef} style={{ position: "relative", width: 240 }}>
       <input
         value={query}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); setHighlight(0); }}
         onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
-        placeholder={activeDisplay || "search pair..."}
+        placeholder={activeLabel || "search pair..."}
         style={{ width: "100%", background: "#131720", border: "1px solid #2A3140", borderRadius: 6, padding: "7px 10px", color: "#E8EAED", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, outline: "none" }}
       />
       {open && (
-        <div style={{ position: "absolute", top: "110%", left: 0, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, zIndex: 30, width: 220, maxHeight: 260, overflow: "auto" }}>
+        <div style={{ position: "absolute", top: "110%", left: 0, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, zIndex: 30, width: 260, maxHeight: 300, overflow: "auto" }}>
           {filtered.length === 0 && <div style={{ padding: 10, fontSize: 12, color: "#4A5063", fontFamily: "'Manrope', sans-serif" }}>No matches</div>}
           {filtered.map((s, i) => (
             <div
-              key={s.pair}
+              key={symbolKey(s)}
               onMouseDown={() => pick(s)}
               onMouseEnter={() => setHighlight(i)}
               style={{ padding: "8px 10px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: "#E8EAED", cursor: "pointer", background: i === highlight ? "#232A38" : "transparent" }}
             >
-              {s.display}
+              {s.display} <span style={{ color: "#4A5063" }}>· {EXCHANGE_LABELS[s.exchange] || s.exchange} · {MARKET_TYPE_LABELS[s.marketType] || s.marketType}</span>
             </div>
           ))}
         </div>
@@ -277,6 +295,9 @@ function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
 export function AppShell({ onBack }) {
   const [symbols, setSymbols] = useState([]);
   const [symbolsError, setSymbolsError] = useState(null);
+  // activeSymbol is now the full row from /symbols — { pair, display,
+  // exchange, marketType } — not just a bare pair string. That's what lets
+  // us tell apart the ~5 identically-named "BTC/USDT" entries.
   const [activeSymbol, setActiveSymbol] = useState(null);
   const [tf, setTf] = useState("15m");
   const [indicatorConfig, setIndicatorConfig] = useState(() => {
@@ -298,7 +319,7 @@ export function AppShell({ onBack }) {
     fetchSymbols()
       .then((rows) => {
         setSymbols(rows);
-        if (rows.length > 0) setActiveSymbol(rows[0].pair);
+        if (rows.length > 0) setActiveSymbol(rows[0]);
       })
       .catch((err) => {
         console.error(err);
@@ -306,7 +327,12 @@ export function AppShell({ onBack }) {
       });
   }, []);
 
-  const { candles, whaleEvents, loading, connected } = useMarketData(activeSymbol || "", tf);
+  const { candles, whaleEvents, loading, loadMore, connected } = useMarketData({
+    exchange: activeSymbol?.exchange,
+    marketType: activeSymbol?.marketType,
+    symbol: activeSymbol?.pair || "",
+    timeframe: tf,
+  });
 
   useEffect(() => {
     if (!activeSymbol) return;
@@ -444,7 +470,7 @@ export function AppShell({ onBack }) {
     return <div style={{ padding: 40, color: "#8B93A3", fontFamily: "'Manrope', sans-serif" }}>Loading symbols...</div>;
   }
 
-  const activeDisplay = symbols.find((s) => s.pair === activeSymbol)?.display || activeSymbol;
+  const activeLabel = `${activeSymbol.display} · ${EXCHANGE_LABELS[activeSymbol.exchange] || activeSymbol.exchange} · ${MARKET_TYPE_LABELS[activeSymbol.marketType] || activeSymbol.marketType}`;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
@@ -452,7 +478,7 @@ export function AppShell({ onBack }) {
         {/* Row 1 — identity + price, always visible without wrapping */}
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <button onClick={onBack} style={{ background: "none", border: "none", color: "#8B93A3", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>← back</button>
-          <SymbolSearch symbols={symbols} activeDisplay={activeDisplay} onSelect={setActiveSymbol} />
+          <SymbolSearch symbols={symbols} activeLabel={activeLabel} onSelect={setActiveSymbol} />
           <div style={{ marginLeft: "auto" }}>
             <PriceTicker candles={candles} connected={connected} />
           </div>
@@ -496,7 +522,7 @@ export function AppShell({ onBack }) {
           <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
         ) : candles.length === 0 ? (
           <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
-            No historical candles yet for {activeDisplay} — the relay writes candles as they close, so a brand-new symbol needs a little time to build up data.
+            No historical candles yet for {activeLabel} — either it needs backfilling, or the relay hasn't written any live candles for it yet.
           </div>
         ) : (
           <TradingChart
@@ -510,6 +536,7 @@ export function AppShell({ onBack }) {
             pendingPoint={pendingPoint}
             drawTool={drawTool}
             onChartClick={handleChartClick}
+            onLoadMore={loadMore}
           />
         )}
       </main>
