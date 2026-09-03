@@ -5,34 +5,51 @@ import { sma, ema, bollinger, rsi, macd, vwap, stochRsi } from "../lib/indicator
 import { TradingChart } from "./Chart.jsx";
 import { AdSlot } from "./AdSlot.jsx";
 
-const INDICATOR_DEFS = [
-  { key: "ma20", label: "MA 20", color: "#F5B700", type: "overlay" },
-  { key: "ema9", label: "EMA 9", color: "#2ED9A0", type: "overlay" },
-  { key: "bb", label: "Bollinger", color: "#7C5CFF", type: "overlay" },
-  { key: "vwap", label: "VWAP", color: "#FF9F40", type: "overlay" },
-  { key: "rsi", label: "RSI", color: "#7C5CFF", type: "pane" },
-  { key: "macd", label: "MACD", color: "#F5B700", type: "pane" },
-  { key: "stochrsi", label: "Stoch RSI", color: "#2ED9A0", type: "pane" },
-];
+// Each indicator now carries its own config (period, color, etc.), not just
+// an on/off flag — this is what makes the settings popover possible.
+const INDICATOR_DEFS = {
+  ma20: { label: "MA", type: "overlay", defaults: { enabled: true, period: 20, color: "#F5B700" } },
+  ema9: { label: "EMA", type: "overlay", defaults: { enabled: false, period: 9, color: "#2ED9A0" } },
+  bb: { label: "Bollinger", type: "overlay", defaults: { enabled: false, period: 20, mult: 2, color: "#7C5CFF" } },
+  vwap: { label: "VWAP", type: "overlay", defaults: { enabled: false, color: "#FF9F40" } },
+  rsi: { label: "RSI", type: "pane", defaults: { enabled: true, period: 14, color: "#7C5CFF" } },
+  macd: { label: "MACD", type: "pane", defaults: { enabled: false, fast: 12, slow: 26, signal: 9, color: "#F5B700" } },
+  stochrsi: { label: "Stoch RSI", type: "pane", defaults: { enabled: false, period: 14, smoothD: 3, color: "#2ED9A0" } },
+};
+
+const COLOR_PRESETS = ["#F5B700", "#2ED9A0", "#7C5CFF", "#FF5C77", "#FF9F40", "#4FA9FF"];
 
 const DRAW_TOOLS = [
-  { key: "trendline", label: "✎ trendline", clicksNeeded: 2 },
-  { key: "horizontal", label: "— h-ray", clicksNeeded: 1 },
+  { key: "trendline", label: "✎ line", clicksNeeded: 2 },
+  { key: "horizontal", label: "— ray", clicksNeeded: 1 },
   { key: "fib", label: "◇ fib", clicksNeeded: 2 },
+  { key: "rectangle", label: "▭ zone", clicksNeeded: 2 },
+  { key: "text", label: "T note", clicksNeeded: 1 },
 ];
 
 function drawingsStorageKey(symbol, tf) {
   return `unblocked.drawings.v2.${symbol}.${tf}`;
 }
+function indicatorConfigStorageKey() {
+  return "unblocked.indicators.v1";
+}
 
-function loadDrawings(symbol, tf) {
+function loadJSON(key, fallback) {
   try {
-    const raw = localStorage.getItem(drawingsStorageKey(symbol, tf));
-    const parsed = raw ? JSON.parse(raw) : [];
-    return Array.isArray(parsed) ? parsed : [];
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? JSON.parse(raw) : fallback;
+    return parsed ?? fallback;
   } catch {
-    return [];
+    return fallback;
   }
+}
+
+function defaultIndicatorConfig() {
+  const cfg = {};
+  Object.entries(INDICATOR_DEFS).forEach(([key, def]) => {
+    cfg[key] = { ...def.defaults };
+  });
+  return cfg;
 }
 
 function WhalePulseLayer({ events, candles }) {
@@ -95,9 +112,6 @@ function PriceTicker({ candles, connected }) {
   );
 }
 
-// Search bar with autocomplete — the sole way to pick a symbol now that the
-// watchlist sidebar is gone. Keyboard nav (up/down/enter) included since a
-// dropdown you can only tap is annoying on desktop.
 function SymbolSearch({ symbols, activeDisplay, onSelect }) {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
@@ -133,7 +147,7 @@ function SymbolSearch({ symbols, activeDisplay, onSelect }) {
   };
 
   return (
-    <div ref={boxRef} style={{ position: "relative", width: 220 }}>
+    <div ref={boxRef} style={{ position: "relative", width: 200 }}>
       <input
         value={query}
         onChange={(e) => { setQuery(e.target.value); setOpen(true); setHighlight(0); }}
@@ -143,7 +157,7 @@ function SymbolSearch({ symbols, activeDisplay, onSelect }) {
         style={{ width: "100%", background: "#131720", border: "1px solid #2A3140", borderRadius: 6, padding: "7px 10px", color: "#E8EAED", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, outline: "none" }}
       />
       {open && (
-        <div style={{ position: "absolute", top: "110%", left: 0, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, zIndex: 20, width: 220, maxHeight: 260, overflow: "auto" }}>
+        <div style={{ position: "absolute", top: "110%", left: 0, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, zIndex: 30, width: 220, maxHeight: 260, overflow: "auto" }}>
           {filtered.length === 0 && <div style={{ padding: 10, fontSize: 12, color: "#4A5063", fontFamily: "'Manrope', sans-serif" }}>No matches</div>}
           {filtered.map((s, i) => (
             <div
@@ -161,12 +175,120 @@ function SymbolSearch({ symbols, activeDisplay, onSelect }) {
   );
 }
 
+// Small popover for adjusting a single indicator's period(s) and color.
+// Renders as a floating card anchored under the indicator's chip.
+function IndicatorSettings({ indKey, def, cfg, onChange, onClose }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    function onDocClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) onClose();
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [onClose]);
+
+  const numberField = (label, field, min = 1, max = 200) => (
+    <label style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, fontSize: 11, color: "#8B93A3", fontFamily: "'JetBrains Mono', monospace" }}>
+      {label}
+      <input
+        type="number"
+        min={min}
+        max={max}
+        value={cfg[field]}
+        onChange={(e) => {
+          const v = Number(e.target.value);
+          if (!Number.isNaN(v)) onChange({ ...cfg, [field]: v });
+        }}
+        style={{ width: 56, background: "#0B0E14", border: "1px solid #2A3140", borderRadius: 4, color: "#E8EAED", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, padding: "3px 6px" }}
+      />
+    </label>
+  );
+
+  return (
+    <div
+      ref={ref}
+      style={{ position: "absolute", top: "110%", left: 0, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, padding: 12, width: 190, display: "flex", flexDirection: "column", gap: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}
+    >
+      <div style={{ fontSize: 11, fontWeight: 700, color: "#E8EAED", fontFamily: "'JetBrains Mono', monospace" }}>{def.label} settings</div>
+
+      {"period" in cfg && numberField("Period", "period", 2, 200)}
+      {"mult" in cfg && numberField("Std Dev ×", "mult", 1, 5)}
+      {"fast" in cfg && numberField("Fast", "fast", 2, 100)}
+      {"slow" in cfg && numberField("Slow", "slow", 2, 200)}
+      {"signal" in cfg && numberField("Signal", "signal", 2, 50)}
+      {"smoothD" in cfg && numberField("Smooth D", "smoothD", 1, 20)}
+
+      <div>
+        <div style={{ fontSize: 11, color: "#8B93A3", fontFamily: "'JetBrains Mono', monospace", marginBottom: 6 }}>Color</div>
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {COLOR_PRESETS.map((c) => (
+            <button
+              key={c}
+              onClick={() => onChange({ ...cfg, color: c })}
+              style={{ width: 20, height: 20, borderRadius: "50%", background: c, border: cfg.color === c ? "2px solid #E8EAED" : "2px solid transparent", cursor: "pointer" }}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const hasSettings = "period" in cfg || "fast" in cfg;
+
+  return (
+    <div style={{ position: "relative" }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 4,
+          background: cfg.enabled ? `${cfg.color}22` : "transparent",
+          border: "1px solid " + (cfg.enabled ? cfg.color + "55" : "#232A38"),
+          borderRadius: 6,
+          padding: "3px 4px 3px 10px",
+        }}
+      >
+        <button
+          onClick={() => onToggle(indKey)}
+          style={{ background: "none", border: "none", color: cfg.enabled ? cfg.color : "#8B93A3", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer", padding: "2px 0" }}
+        >
+          {def.label}{"period" in cfg ? ` ${cfg.period}` : ""}
+        </button>
+        {hasSettings && (
+          <button
+            onClick={() => setSettingsOpen((o) => !o)}
+            title="Settings"
+            style={{ background: "none", border: "none", color: cfg.enabled ? cfg.color : "#4A5063", cursor: "pointer", fontSize: 11, padding: "2px 6px" }}
+          >
+            ⚙
+          </button>
+        )}
+      </div>
+      {settingsOpen && (
+        <IndicatorSettings indKey={indKey} def={def} cfg={cfg} onChange={(next) => onChange(indKey, next)} onClose={() => setSettingsOpen(false)} />
+      )}
+    </div>
+  );
+}
+
 export function AppShell({ onBack }) {
   const [symbols, setSymbols] = useState([]);
   const [symbolsError, setSymbolsError] = useState(null);
   const [activeSymbol, setActiveSymbol] = useState(null);
   const [tf, setTf] = useState("15m");
-  const [active, setActive] = useState({ ma20: true, ema9: false, bb: false, vwap: false, rsi: true, macd: false, stochrsi: false });
+  const [indicatorConfig, setIndicatorConfig] = useState(() => {
+    const saved = loadJSON(indicatorConfigStorageKey(), null);
+    const defaults = defaultIndicatorConfig();
+    if (!saved) return defaults;
+    // Merge saved values over defaults so newly-added indicators/fields
+    // (from future updates) don't end up undefined for existing users.
+    const merged = {};
+    Object.keys(defaults).forEach((k) => { merged[k] = { ...defaults[k], ...(saved[k] || {}) }; });
+    return merged;
+  });
 
   const [drawTool, setDrawTool] = useState(null);
   const [drawings, setDrawings] = useState([]);
@@ -188,7 +310,7 @@ export function AppShell({ onBack }) {
 
   useEffect(() => {
     if (!activeSymbol) return;
-    setDrawings(loadDrawings(activeSymbol, tf));
+    setDrawings(loadJSON(drawingsStorageKey(activeSymbol, tf), []));
     setPendingPoint(null);
     setDrawTool(null);
   }, [activeSymbol, tf]);
@@ -202,68 +324,95 @@ export function AppShell({ onBack }) {
     }
   }, [drawings, activeSymbol, tf]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(indicatorConfigStorageKey(), JSON.stringify(indicatorConfig));
+    } catch {
+      // same as above
+    }
+  }, [indicatorConfig]);
+
   const closes = candles.map((c) => c.c);
+  const cfg = indicatorConfig;
   const indicators = useMemo(
     () => ({
-      smaVals: sma(closes, 20),
-      emaVals: ema(closes, 9),
-      bbVals: bollinger(closes, 20, 2),
+      smaVals: sma(closes, cfg.ma20.period),
+      emaVals: ema(closes, cfg.ema9.period),
+      bbVals: bollinger(closes, cfg.bb.period, cfg.bb.mult),
       vwapVals: vwap(candles),
-      rsiVals: rsi(closes, 14),
-      macdVals: macd(closes),
-      stochRsiVals: stochRsi(closes, 14, 14, 3),
+      rsiVals: rsi(closes, cfg.rsi.period),
+      macdVals: macd(closes, cfg.macd.fast, cfg.macd.slow, cfg.macd.signal),
+      stochRsiVals: stochRsi(closes, cfg.stochrsi.period, cfg.stochrsi.period, cfg.stochrsi.smoothD),
     }),
-    [candles]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [candles, cfg.ma20.period, cfg.ema9.period, cfg.bb.period, cfg.bb.mult, cfg.rsi.period, cfg.macd.fast, cfg.macd.slow, cfg.macd.signal, cfg.stochrsi.period, cfg.stochrsi.smoothD]
   );
 
   const overlays = [];
-  if (active.ma20) overlays.push({ values: indicators.smaVals, color: "#F5B700" });
-  if (active.ema9) overlays.push({ values: indicators.emaVals, color: "#2ED9A0" });
-  if (active.bb) {
-    overlays.push({ values: indicators.bbVals.upper, color: "#7C5CFF", dash: true });
-    overlays.push({ values: indicators.bbVals.lower, color: "#7C5CFF", dash: true });
+  if (cfg.ma20.enabled) overlays.push({ values: indicators.smaVals, color: cfg.ma20.color });
+  if (cfg.ema9.enabled) overlays.push({ values: indicators.emaVals, color: cfg.ema9.color });
+  if (cfg.bb.enabled) {
+    overlays.push({ values: indicators.bbVals.upper, color: cfg.bb.color, dash: true });
+    overlays.push({ values: indicators.bbVals.lower, color: cfg.bb.color, dash: true });
   }
-  if (active.vwap) overlays.push({ values: indicators.vwapVals, color: "#FF9F40" });
+  if (cfg.vwap.enabled) overlays.push({ values: indicators.vwapVals, color: cfg.vwap.color });
 
   const indicatorPanes = [];
-  if (active.rsi) {
-    indicatorPanes.push({ key: "rsi", lines: [{ values: indicators.rsiVals, color: "#7C5CFF" }], stretchFactor: 1.4 });
+  if (cfg.rsi.enabled) {
+    indicatorPanes.push({
+      key: "rsi",
+      lines: [{ values: indicators.rsiVals, color: cfg.rsi.color }],
+      bounds: [0, 100],
+      refLines: [{ value: 30, color: "#2A3140" }, { value: 70, color: "#2A3140" }],
+      stretchFactor: 1.4,
+    });
   }
-  if (active.macd) {
+  if (cfg.macd.enabled) {
     indicatorPanes.push({
       key: "macd",
       lines: [
-        { values: indicators.macdVals.macdLine, color: "#F5B700" },
+        { values: indicators.macdVals.macdLine, color: cfg.macd.color },
         { values: indicators.macdVals.signalLine, color: "#7C5CFF" },
       ],
       histogram: { values: indicators.macdVals.histogram, upColor: "#2ED9A055", downColor: "#FF5C7755" },
       stretchFactor: 1.4,
     });
   }
-  if (active.stochrsi) {
+  if (cfg.stochrsi.enabled) {
     indicatorPanes.push({
       key: "stochrsi",
       lines: [
-        { values: indicators.stochRsiVals.k, color: "#2ED9A0" },
+        { values: indicators.stochRsiVals.k, color: cfg.stochrsi.color },
         { values: indicators.stochRsiVals.d, color: "#F5B700" },
       ],
+      bounds: [0, 100],
+      refLines: [{ value: 20, color: "#2A3140" }, { value: 80, color: "#2A3140" }],
       stretchFactor: 1.4,
     });
   }
 
-  const toggleIndicator = (key) => setActive((a) => ({ ...a, [key]: !a[key] }));
+  const toggleIndicator = (key) => setIndicatorConfig((c) => ({ ...c, [key]: { ...c[key], enabled: !c[key].enabled } }));
+  const updateIndicator = (key, next) => setIndicatorConfig((c) => ({ ...c, [key]: next }));
 
   const selectDrawTool = (key) => {
     setPendingPoint(null);
     setDrawTool((cur) => (cur === key ? null : key));
   };
 
-  // time is unix seconds (from the chart), price is the real chart price —
-  // both come straight from TradingChart's click handler now.
   const handleChartClick = (time, price) => {
     if (!drawTool) return;
     const toolDef = DRAW_TOOLS.find((t) => t.key === drawTool);
     const point = { time, price };
+
+    if (drawTool === "text") {
+      const text = window.prompt("Note text:");
+      if (text) {
+        setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: "text", points: [point], text, color: "#E8EAED" }]);
+      }
+      setDrawTool(null);
+      return;
+    }
+
     if (toolDef.clicksNeeded === 1) {
       setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [point] }]);
       setDrawTool(null);
@@ -299,47 +448,48 @@ export function AppShell({ onBack }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
-      <header style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 20px", borderBottom: "1px solid #1D232F", flexWrap: "wrap" }}>
-        <button onClick={onBack} style={{ background: "none", border: "none", color: "#8B93A3", cursor: "pointer", fontSize: 13 }}>← back</button>
-
-        <SymbolSearch symbols={symbols} activeDisplay={activeDisplay} onSelect={setActiveSymbol} />
-
-        <div style={{ display: "flex", gap: 6 }}>
-          {["1m", "15m", "1h", "4h", "1d"].map((t) => (
-            <button key={t} onClick={() => setTf(t)} style={{ background: tf === t ? "#191F2A" : "transparent", color: tf === t ? "#F5B700" : "#8B93A3", border: "1px solid " + (tf === t ? "#2A3140" : "transparent"), borderRadius: 6, padding: "5px 10px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}>
-              {t}
-            </button>
-          ))}
+      <header style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 16px", borderBottom: "1px solid #1D232F" }}>
+        {/* Row 1 — identity + price, always visible without wrapping */}
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <button onClick={onBack} style={{ background: "none", border: "none", color: "#8B93A3", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>← back</button>
+          <SymbolSearch symbols={symbols} activeDisplay={activeDisplay} onSelect={setActiveSymbol} />
+          <div style={{ marginLeft: "auto" }}>
+            <PriceTicker candles={candles} connected={connected} />
+          </div>
         </div>
 
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          {INDICATOR_DEFS.map((ind) => (
-            <button key={ind.key} onClick={() => toggleIndicator(ind.key)} style={{ background: active[ind.key] ? `${ind.color}22` : "transparent", color: active[ind.key] ? ind.color : "#8B93A3", border: "1px solid " + (active[ind.key] ? ind.color + "55" : "#232A38"), borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}>
-              {ind.label}
-            </button>
-          ))}
+        {/* Row 2 — timeframe + indicators, wraps freely on narrow screens */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: 4 }}>
+            {["1m", "15m", "1h", "4h", "1d"].map((t) => (
+              <button key={t} onClick={() => setTf(t)} style={{ background: tf === t ? "#191F2A" : "transparent", color: tf === t ? "#F5B700" : "#8B93A3", border: "1px solid " + (tf === t ? "#2A3140" : "transparent"), borderRadius: 6, padding: "5px 9px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}>
+                {t}
+              </button>
+            ))}
+          </div>
+          <div style={{ width: 1, height: 18, background: "#1D232F" }} />
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {Object.entries(INDICATOR_DEFS).map(([key, def]) => (
+              <IndicatorChip key={key} indKey={key} def={def} cfg={indicatorConfig[key]} onToggle={toggleIndicator} onChange={updateIndicator} />
+            ))}
+          </div>
         </div>
 
-        <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+        {/* Row 3 — drawing tools */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
           {DRAW_TOOLS.map((t) => (
             <button
               key={t.key}
               onClick={() => selectDrawTool(t.key)}
-              style={{ background: drawTool === t.key ? "#F5B70022" : "transparent", color: drawTool === t.key ? "#F5B700" : "#8B93A3", border: "1px solid " + (drawTool === t.key ? "#F5B70055" : "#232A38"), borderRadius: 6, padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}
+              style={{ background: drawTool === t.key ? "#F5B70022" : "transparent", color: drawTool === t.key ? "#F5B700" : "#8B93A3", border: "1px solid " + (drawTool === t.key ? "#F5B70055" : "#232A38"), borderRadius: 6, padding: "4px 9px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}
             >
               {drawTool === t.key ? (pendingPoint ? "click 2nd pt" : t.clicksNeeded === 1 ? "click point" : "click 1st pt") : t.label}
             </button>
           ))}
         </div>
-
-        <div style={{ marginLeft: "auto" }}>
-          <PriceTicker candles={candles} connected={connected} />
-        </div>
       </header>
 
-      {/* Chart region intentionally consumes the large majority of the page —
-          no sidebar competing for width, symbol switching lives entirely in
-          the search box above. */}
+      {/* Chart region intentionally consumes the large majority of the page. */}
       <main style={{ flex: "1 1 80%", position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
         <WhalePulseLayer events={whaleEvents} candles={candles} />
         {loading ? (
@@ -368,7 +518,7 @@ export function AppShell({ onBack }) {
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 16px 8px" }}>
           {drawings.map((d) => (
             <div key={d.id} style={{ display: "flex", alignItems: "center", gap: 6, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6, padding: "3px 8px", fontFamily: "'JetBrains Mono', monospace", fontSize: 11, color: "#8B93A3" }}>
-              {d.type}
+              {d.type}{d.type === "text" ? `: ${d.text?.slice(0, 16)}` : ""}
               <span onClick={() => removeDrawing(d.id)} style={{ cursor: "pointer", color: "#FF5C77", fontWeight: 700 }}>×</span>
             </div>
           ))}

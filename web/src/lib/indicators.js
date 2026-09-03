@@ -60,22 +60,25 @@ export function rsi(closes, period = 14) {
   return out;
 }
 
-export function macd(closes) {
-  const e12 = ema(closes, 12);
-  const e26 = ema(closes, 26);
-  const macdLine = closes.map((_, i) => (e12[i] != null && e26[i] != null ? e12[i] - e26[i] : null));
+// Now takes fast/slow/signal periods instead of hardcoding 12/26/9 — needed
+// so the settings popover's period fields actually do something. Defaults
+// preserve the original behavior exactly for anyone not customizing it.
+export function macd(closes, fastPeriod = 12, slowPeriod = 26, signalPeriod = 9) {
+  const eFast = ema(closes, fastPeriod);
+  const eSlow = ema(closes, slowPeriod);
+  const macdLine = closes.map((_, i) => (eFast[i] != null && eSlow[i] != null ? eFast[i] - eSlow[i] : null));
   const validIdx = macdLine.map((v, i) => (v != null ? i : null)).filter((v) => v != null);
   const signalLine = new Array(closes.length).fill(null);
-  if (validIdx.length >= 9) {
-    const k = 2 / 10;
+  if (validIdx.length >= signalPeriod) {
+    const k = 2 / (signalPeriod + 1);
     let prev = null;
     validIdx.forEach((idx, n) => {
-      if (n === 8) {
+      if (n === signalPeriod - 1) {
         let sum = 0;
-        for (let m = 0; m < 9; m++) sum += macdLine[validIdx[m]];
-        prev = sum / 9;
+        for (let m = 0; m < signalPeriod; m++) sum += macdLine[validIdx[m]];
+        prev = sum / signalPeriod;
         signalLine[idx] = prev;
-      } else if (n > 8) {
+      } else if (n > signalPeriod - 1) {
         prev = macdLine[idx] * k + prev * (1 - k);
         signalLine[idx] = prev;
       }
@@ -111,7 +114,6 @@ export function stochRsi(closes, rsiPeriod = 14, stochPeriod = 14, dPeriod = 3) 
   const k = new Array(n).fill(null);
   for (let i = 0; i < n; i++) {
     if (rsiVals[i] == null) continue;
-    // Need `stochPeriod` consecutive non-null RSI values ending at i.
     const start = i - stochPeriod + 1;
     if (start < 0 || rsiVals[start] == null) continue;
     let hi = -Infinity, lo = Infinity;
