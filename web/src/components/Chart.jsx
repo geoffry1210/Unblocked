@@ -123,6 +123,7 @@ export function TradingChart({
   drawings = [],
   pendingPoints = [],
   drawTool,
+  drawToolClicksNeeded = 1,
   onChartClick,
   onLoadMore,
 }) {
@@ -138,12 +139,15 @@ export function TradingChart({
   const onChartClickRef = useRef(onChartClick);
   const onLoadMoreRef = useRef(onLoadMore);
   const loadMoreArmedRef = useRef(true); // debounce: only fire once per approach to the edge
+  const hoverPointRef = useRef(null); // live {time, price} under the pointer — drives the rubber-band preview
+  const clicksNeededRef = useRef(drawToolClicksNeeded);
 
   useEffect(() => {
     drawToolRef.current = drawTool;
     onChartClickRef.current = onChartClick;
     onLoadMoreRef.current = onLoadMore;
-  }, [drawTool, onChartClick, onLoadMore]);
+    clicksNeededRef.current = drawToolClicksNeeded;
+  }, [drawTool, onChartClick, onLoadMore, drawToolClicksNeeded]);
 
   // ---- create chart once ----
   useLayoutEffect(() => {
@@ -179,7 +183,19 @@ export function TradingChart({
 
     const redraw = () => redrawDrawingsRef.current();
     chart.timeScale().subscribeVisibleTimeRangeChange(redraw);
-    chart.subscribeCrosshairMove(redraw);
+    // Crosshair move fires on mouse hover (desktop) and on active touch-drag
+    // (mobile) — there's no true "hover" on a phone before the first touch,
+    // but this still drives the live preview during any pointer movement,
+    // and is exactly the signal TradingView itself uses for both.
+    chart.subscribeCrosshairMove((param) => {
+      if (drawToolRef.current && param.point && param.time != null) {
+        const price = candleSeries.coordinateToPrice(param.point.y);
+        hoverPointRef.current = price == null ? null : { time: param.time, price };
+      } else {
+        hoverPointRef.current = null;
+      }
+      redraw();
+    });
 
     // Pan-to-load-more: when the visible logical range's left edge gets
     // within 20 bars of the start of loaded data, ask the parent for an
@@ -312,6 +328,7 @@ export function TradingChart({
 
       const ns = "http://www.w3.org/2000/svg";
       const ts = chart.timeScale();
+      let target = svg; // swapped to a translucent <g> during preview rendering
       const toXY = (p) => {
         const x = ts.timeToCoordinate(p.time);
         const y = series.priceToCoordinate(p.price);
@@ -326,7 +343,7 @@ export function TradingChart({
         el.setAttribute("stroke", color);
         el.setAttribute("stroke-width", "1");
         if (dash) el.setAttribute("stroke-dasharray", dash);
-        svg.appendChild(el);
+        target.appendChild(el);
       };
       const addRect = (x1, y1, x2, y2, color) => {
         const el = document.createElementNS(ns, "rect");
@@ -338,7 +355,7 @@ export function TradingChart({
         el.setAttribute("fill-opacity", "0.12");
         el.setAttribute("stroke", color);
         el.setAttribute("stroke-width", "1");
-        svg.appendChild(el);
+        target.appendChild(el);
       };
       const addText = (x, y, text, color) => {
         const el = document.createElementNS(ns, "text");
@@ -348,7 +365,7 @@ export function TradingChart({
         el.setAttribute("font-size", "11");
         el.setAttribute("font-family", "'JetBrains Mono', monospace");
         el.textContent = text;
-        svg.appendChild(el);
+        target.appendChild(el);
       };
       const addPolyline = (pts, color) => {
         if (pts.length < 2) return;
@@ -357,7 +374,7 @@ export function TradingChart({
         el.setAttribute("fill", "none");
         el.setAttribute("stroke", color);
         el.setAttribute("stroke-width", "1.2");
-        svg.appendChild(el);
+        target.appendChild(el);
       };
       const extendPoint = (x1, y1, x2, y2, factor) => ({ x: x2 + (x2 - x1) * factor, y: y2 + (y2 - y1) * factor });
       // Linear interpolation along a line defined by two chart points, at
@@ -369,7 +386,7 @@ export function TradingChart({
         return p1.y + t * (p2.y - p1.y);
       };
 
-      drawings.forEach((d) => {
+      const renderOne = (d) => {
         if (d.type === "trendline") {
           const p1 = toXY(d.points[0]);
           const p2 = toXY(d.points[1]);
@@ -528,7 +545,9 @@ export function TradingChart({
           const p1 = toXY(d.points[0]);
           if (p1 && d.text) addText(p1.x + 4, p1.y - 4, d.text, d.color || "#E8EAED");
         }
-      });
+      };
+
+      drawings.forEach(renderOne);
 
       pendingPoints.forEach((pt) => {
         const p = toXY(pt);
@@ -541,6 +560,30 @@ export function TradingChart({
           svg.appendChild(el);
         }
       });
+
+      // ---- live rubber-band preview while placing a drawing ----
+      const hover = hoverPointRef.current;
+      if (drawToolRef.current && hover) {
+        const needed = clicksNeededRef.current;
+        const previewPoints = [...pendingPoints, hover];
+        const previewGroup = document.createElementNS(ns, "g");
+        previewGroup.setAttribute("opacity", "0.6");
+        svg.appendChild(previewGroup);
+        target = previewGroup;
+
+        if (previewPoints.length === needed) {
+          // Enough points to show the exact final shape, live.
+          renderOne({ type: drawToolRef.current, points: previewPoints, color: "#F5B700" });
+        } else if (pendingPoints.length > 0) {
+          // Not enough for the real shape yet — a simple guide line from
+          // the last placed point to the cursor is still useful feedback.
+          const last = pendingPoints[pendingPoints.length - 1];
+          const p1 = toXY(last);
+          const p2 = toXY(hover);
+          if (p1 && p2) addLine(p1.x, p1.y, p2.x, p2.y, "#F5B700", "3,2");
+        }
+        target = svg;
+      }
     };
     redrawDrawingsRef.current = draw;
     draw();

@@ -663,6 +663,7 @@ export function AppShell({ onBack }) {
             drawings={drawings}
             pendingPoints={pendingPoints}
             drawTool={drawTool}
+            drawToolClicksNeeded={ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded ?? 1}
             onChartClick={handleChartClick}
             onLoadMore={loadMore}
           />
