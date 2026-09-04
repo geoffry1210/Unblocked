@@ -76,6 +76,11 @@ const DRAW_GROUPS = [
     label: "Shapes",
     tools: [
       { key: "rectangle", label: "Rectangle", clicksNeeded: 2 },
+      { key: "circle", label: "Circle", clicksNeeded: 2 },
+      { key: "ellipse", label: "Ellipse", clicksNeeded: 2 },
+      { key: "triangle", label: "Triangle", clicksNeeded: 3 },
+      { key: "curve", label: "Curve", clicksNeeded: 3 },
+      { key: "arc", label: "Arc", clicksNeeded: 3 },
     ],
   },
   {
@@ -354,10 +359,11 @@ function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
   );
 }
 
-function ToolGroupDropdown({ group, activeTool, onSelect }) {
+function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   const activeInGroup = group.tools.find((t) => t.key === activeTool);
+  const flyoutStyle = direction === "right" ? { top: 0, left: "110%" } : { top: "110%", left: 0 };
 
   useEffect(() => {
     function onDocClick(e) {
@@ -371,20 +377,20 @@ function ToolGroupDropdown({ group, activeTool, onSelect }) {
     <div ref={ref} style={{ position: "relative" }}>
       <button
         onClick={() => setOpen((o) => !o)}
-        title={group.label}
+        title={activeInGroup ? activeInGroup.label : group.label}
         style={{
-          display: "flex", alignItems: "center", gap: 4,
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
           background: activeInGroup ? "#F5B70022" : "transparent",
           color: activeInGroup ? "#F5B700" : "#8B93A3",
           border: "1px solid " + (activeInGroup ? "#F5B70055" : "#232A38"),
-          borderRadius: 6, padding: "4px 8px", fontSize: 13, cursor: "pointer",
+          borderRadius: 6, padding: direction === "right" ? "8px" : "4px 8px",
+          fontSize: 15, cursor: "pointer", width: direction === "right" ? 34 : "auto",
         }}
       >
-        <span style={{ fontSize: 13 }}>{group.icon}</span>
-        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>{activeInGroup ? activeInGroup.label : group.label}</span>
+        <span style={{ fontSize: 15 }}>{group.icon}</span>
       </button>
       {open && (
-        <div style={{ position: "absolute", top: "110%", left: 0, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, width: 170, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+        <div style={{ position: "absolute", ...flyoutStyle, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, width: 180, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
           {group.tools.map((t) => (
             <div
               key={t.key}
@@ -625,50 +631,51 @@ export function AppShell({ onBack }) {
             ))}
           </div>
         </div>
+      </header>
 
-        {/* Row 3 — drawing tools, grouped into icon dropdowns instead of one row per tool */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", flex: "1 1 80%", minHeight: 0 }}>
+        <aside style={{ width: 44, flexShrink: 0, borderRight: "1px solid #1D232F", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 5px", overflow: "visible" }}>
           {DRAW_GROUPS.map((group) => (
-            <ToolGroupDropdown key={group.key} group={group} activeTool={drawTool} onSelect={selectDrawTool} />
+            <ToolGroupDropdown key={group.key} group={group} activeTool={drawTool} onSelect={selectDrawTool} direction="right" />
           ))}
+        </aside>
+
+        <main style={{ flex: 1, position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
           {drawTool && (
-            <span style={{ fontSize: 10, color: "#4A5063", fontFamily: "'JetBrains Mono', monospace" }}>
+            <div style={{ position: "absolute", top: 4, left: 16, zIndex: 5, fontSize: 10, color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", background: "#0B0E1499", padding: "2px 8px", borderRadius: 4 }}>
               {(() => {
                 const toolDef = ALL_DRAW_TOOLS.find((t) => t.key === drawTool);
                 const needed = toolDef?.clicksNeeded ?? 1;
                 const done = pendingPoints.length;
                 return needed === 1 ? "click point" : `click point ${done + 1} of ${needed}`;
               })()}
-            </span>
+            </div>
           )}
-        </div>
-      </header>
-
-      <main style={{ flex: "1 1 80%", position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <WhalePulseLayer events={whaleEvents} candles={candles} />
-        {loading ? (
-          <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
-        ) : candles.length === 0 ? (
-          <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
-            No historical candles yet for {activeLabel} — either it needs backfilling, or the relay hasn't written any live candles for it yet.
-          </div>
-        ) : (
-          <TradingChart
-            candles={candles}
-            overlays={overlays}
-            indicatorPanes={indicatorPanes}
-            height="100%"
-            up="#2ED9A0"
-            down="#FF5C77"
-            drawings={drawings}
-            pendingPoints={pendingPoints}
-            drawTool={drawTool}
-            drawToolClicksNeeded={ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded ?? 1}
-            onChartClick={handleChartClick}
-            onLoadMore={loadMore}
-          />
-        )}
-      </main>
+          <WhalePulseLayer events={whaleEvents} candles={candles} />
+          {loading ? (
+            <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
+          ) : candles.length === 0 ? (
+            <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
+              No historical candles yet for {activeLabel} — either it needs backfilling, or the relay hasn't written any live candles for it yet.
+            </div>
+          ) : (
+            <TradingChart
+              candles={candles}
+              overlays={overlays}
+              indicatorPanes={indicatorPanes}
+              height="100%"
+              up="#2ED9A0"
+              down="#FF5C77"
+              drawings={drawings}
+              pendingPoints={pendingPoints}
+              drawTool={drawTool}
+              drawToolClicksNeeded={ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded ?? 1}
+              onChartClick={handleChartClick}
+              onLoadMore={loadMore}
+            />
+          )}
+        </main>
+      </div>
 
       {drawings.length > 0 && (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 16px 8px" }}>

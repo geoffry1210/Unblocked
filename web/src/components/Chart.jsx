@@ -376,6 +376,37 @@ export function TradingChart({
         el.setAttribute("stroke-width", "1.2");
         target.appendChild(el);
       };
+      const addPath = (d, color, dash) => {
+        const el = document.createElementNS(ns, "path");
+        el.setAttribute("d", d);
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", "1");
+        if (dash) el.setAttribute("stroke-dasharray", dash);
+        target.appendChild(el);
+      };
+      const addEllipse = (cx, cy, rx, ry, color) => {
+        const el = document.createElementNS(ns, "ellipse");
+        el.setAttribute("cx", cx);
+        el.setAttribute("cy", cy);
+        el.setAttribute("rx", Math.abs(rx));
+        el.setAttribute("ry", Math.abs(ry));
+        el.setAttribute("fill", color);
+        el.setAttribute("fill-opacity", "0.12");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", "1");
+        target.appendChild(el);
+      };
+      // Circle through 3 points (circumcircle) — used to draw an accurate
+      // circular arc through a start, end, and "bulge" point, rather than
+      // approximating with a bezier curve.
+      const threePointCircle = (p1, p2, p3) => {
+        const d = 2 * (p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
+        if (Math.abs(d) < 1e-6) return null; // collinear — no finite circle
+        const ux = ((p1.x ** 2 + p1.y ** 2) * (p2.y - p3.y) + (p2.x ** 2 + p2.y ** 2) * (p3.y - p1.y) + (p3.x ** 2 + p3.y ** 2) * (p1.y - p2.y)) / d;
+        const uy = ((p1.x ** 2 + p1.y ** 2) * (p3.x - p2.x) + (p2.x ** 2 + p2.y ** 2) * (p1.x - p3.x) + (p3.x ** 2 + p3.y ** 2) * (p2.x - p1.x)) / d;
+        return { cx: ux, cy: uy, r: Math.hypot(p1.x - ux, p1.y - uy) };
+      };
       const extendPoint = (x1, y1, x2, y2, factor) => ({ x: x2 + (x2 - x1) * factor, y: y2 + (y2 - y1) * factor });
       // Linear interpolation along a line defined by two chart points, at
       // an arbitrary x pixel coordinate — used by channel tools to find
@@ -537,6 +568,51 @@ export function TradingChart({
             .map((p) => ({ x: ts.timeToCoordinate(p.time), y: series.priceToCoordinate(p.value) }))
             .filter((p) => p.x != null && p.y != null);
           addPolyline(pts, d.color || "#FF9F40");
+        } else if (d.type === "circle") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            const r = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            addEllipse(p1.x, p1.y, r, r, d.color || "#F5B700");
+          }
+        } else if (d.type === "ellipse") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            addEllipse((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, (p2.x - p1.x) / 2, (p2.y - p1.y) / 2, d.color || "#F5B700");
+          }
+        } else if (d.type === "triangle") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const el = document.createElementNS(ns, "polygon");
+            el.setAttribute("points", `${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`);
+            el.setAttribute("fill", d.color || "#F5B700");
+            el.setAttribute("fill-opacity", "0.12");
+            el.setAttribute("stroke", d.color || "#F5B700");
+            el.setAttribute("stroke-width", "1");
+            target.appendChild(el);
+          }
+        } else if (d.type === "curve") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]); // control point — the curve bulges toward this
+          if (p1 && p2 && p3) addPath(`M ${p1.x} ${p1.y} Q ${p3.x} ${p3.y} ${p2.x} ${p2.y}`, d.color || "#F5B700");
+        } else if (d.type === "arc") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]); // a point the arc passes through
+          if (p1 && p2 && p3) {
+            const circ = threePointCircle(p1, p2, p3);
+            if (circ) {
+              const cross = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+              const sweepFlag = cross > 0 ? 1 : 0;
+              addPath(`M ${p1.x} ${p1.y} A ${circ.r} ${circ.r} 0 0 ${sweepFlag} ${p2.x} ${p2.y}`, d.color || "#F5B700");
+            } else {
+              addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700"); // 3 points in a line — no arc possible
+            }
+          }
         } else if (d.type === "rectangle") {
           const p1 = toXY(d.points[0]);
           const p2 = toXY(d.points[1]);
