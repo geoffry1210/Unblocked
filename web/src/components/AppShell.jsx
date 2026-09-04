@@ -95,6 +95,36 @@ const DRAW_GROUPS = [
 
 const ALL_DRAW_TOOLS = DRAW_GROUPS.flatMap((g) => g.tools);
 
+// Per-tool icons for the flyout grid — name shows only as a hover tooltip
+// (native `title` attribute), not as always-visible text.
+const TOOL_ICONS = {
+  eraser: "⌫",
+  trendline: "╱",
+  ray: "→",
+  infoline: "ℹ",
+  extended: "↔",
+  trendangle: "∠",
+  hline: "—",
+  horizontal: "⇥",
+  vertical: "|",
+  cross: "✛",
+  anchoredvwap: "Ⓥ",
+  flattop: "⊓",
+  fib: "▽",
+  fibext: "⋙",
+  fibchannel: "║",
+  fibtimezone: "⋮",
+  parallelchannel: "≡",
+  disjointchannel: "⧉",
+  rectangle: "▭",
+  circle: "○",
+  ellipse: "⬭",
+  triangle: "△",
+  curve: "∿",
+  arc: "⌒",
+  text: "T",
+};
+
 const EXCHANGE_LABELS = { binance: "Binance", bybit: "Bybit", bitunix: "Bitunix", mexc: "MEXC", weex: "Weex" };
 const MARKET_TYPE_LABELS = { spot: "Spot", perp: "Perp" };
 
@@ -361,7 +391,9 @@ function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
 
 function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) {
   const [open, setOpen] = useState(false);
+  const [flashLabel, setFlashLabel] = useState(null);
   const ref = useRef(null);
+  const flashTimerRef = useRef(null);
   const activeInGroup = group.tools.find((t) => t.key === activeTool);
   const flyoutStyle = direction === "right" ? { top: 0, left: "110%" } : { top: "110%", left: 0 };
 
@@ -372,6 +404,19 @@ function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) 
     document.addEventListener("mousedown", onDocClick);
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
+
+  useEffect(() => () => clearTimeout(flashTimerRef.current), []);
+
+  const pick = (t) => {
+    onSelect(t.key);
+    setOpen(false);
+    // Hover tooltips (the `title` attribute) never fire on touchscreens —
+    // this is the mobile equivalent: briefly show the name after tapping,
+    // as confirmation of what got selected, then fade it out on its own.
+    setFlashLabel(t.label);
+    clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashLabel(null), 1100);
+  };
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -390,16 +435,36 @@ function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) 
         <span style={{ fontSize: 15 }}>{group.icon}</span>
       </button>
       {open && (
-        <div style={{ position: "absolute", ...flyoutStyle, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, width: 180, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+        <div style={{ position: "absolute", ...flyoutStyle, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, padding: 6, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4, width: 168, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
           {group.tools.map((t) => (
-            <div
+            <button
               key={t.key}
-              onClick={() => { onSelect(t.key); setOpen(false); }}
-              style={{ padding: "8px 12px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: activeTool === t.key ? "#F5B700" : "#E8EAED", cursor: "pointer", background: activeTool === t.key ? "#F5B70011" : "transparent" }}
+              onClick={() => pick(t)}
+              title={t.label}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 36, height: 32, fontSize: 14, cursor: "pointer",
+                borderRadius: 6, border: "1px solid " + (activeTool === t.key ? "#F5B70055" : "transparent"),
+                background: activeTool === t.key ? "#F5B70022" : "transparent",
+                color: activeTool === t.key ? "#F5B700" : "#E8EAED",
+              }}
             >
-              {t.label}
-            </div>
+              {TOOL_ICONS[t.key] || "?"}
+            </button>
           ))}
+        </div>
+      )}
+      {!open && flashLabel && (
+        <div
+          style={{
+            position: "absolute", ...flyoutStyle, zIndex: 30,
+            background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6,
+            padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+            color: "#F5B700", whiteSpace: "nowrap", pointerEvents: "none",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          }}
+        >
+          {flashLabel}
         </div>
       )}
     </div>
