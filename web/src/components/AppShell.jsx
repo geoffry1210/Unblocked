@@ -46,6 +46,8 @@ const DRAW_GROUPS = [
       { key: "horizontal", label: "Horizontal Ray", clicksNeeded: 1 },
       { key: "vertical", label: "Vertical Line", clicksNeeded: 1 },
       { key: "cross", label: "Cross Line", clicksNeeded: 1 },
+      { key: "anchoredvwap", label: "Anchored VWAP", clicksNeeded: 1 },
+      { key: "flattop", label: "Flat Top/Bottom", clicksNeeded: 3 },
     ],
   },
   {
@@ -54,6 +56,18 @@ const DRAW_GROUPS = [
     label: "Fib",
     tools: [
       { key: "fib", label: "Fib Retracement", clicksNeeded: 2 },
+      { key: "fibext", label: "Fib Extension", clicksNeeded: 2 },
+      { key: "fibchannel", label: "Fib Channel", clicksNeeded: 3 },
+      { key: "fibtimezone", label: "Fib Time Zone", clicksNeeded: 2 },
+    ],
+  },
+  {
+    key: "channels",
+    icon: "≋",
+    label: "Channels",
+    tools: [
+      { key: "parallelchannel", label: "Parallel Channel", clicksNeeded: 3 },
+      { key: "disjointchannel", label: "Disjoint Channel", clicksNeeded: 4 },
     ],
   },
   {
@@ -405,7 +419,7 @@ export function AppShell({ onBack }) {
 
   const [drawTool, setDrawTool] = useState(null);
   const [drawings, setDrawings] = useState([]);
-  const [pendingPoint, setPendingPoint] = useState(null);
+  const [pendingPoints, setPendingPoints] = useState([]);
 
   useEffect(() => {
     fetchSymbols()
@@ -429,7 +443,7 @@ export function AppShell({ onBack }) {
   useEffect(() => {
     if (!activeSymbol) return;
     setDrawings(loadJSON(drawingsStorageKey(activeSymbol, tf), []));
-    setPendingPoint(null);
+    setPendingPoints([]);
     setDrawTool(null);
   }, [activeSymbol, tf]);
 
@@ -513,7 +527,7 @@ export function AppShell({ onBack }) {
   const updateIndicator = (key, next) => setIndicatorConfig((c) => ({ ...c, [key]: next }));
 
   const selectDrawTool = (key) => {
-    setPendingPoint(null);
+    setPendingPoints([]);
     setDrawTool((cur) => (cur === key ? null : key));
   };
 
@@ -556,16 +570,12 @@ export function AppShell({ onBack }) {
       return;
     }
 
-    if (toolDef.clicksNeeded === 1) {
-      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [point] }]);
-      setDrawTool(null);
-      return;
-    }
-    if (!pendingPoint) {
-      setPendingPoint(point);
+    const nextPoints = [...pendingPoints, point];
+    if (nextPoints.length < toolDef.clicksNeeded) {
+      setPendingPoints(nextPoints);
     } else {
-      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [pendingPoint, point] }]);
-      setPendingPoint(null);
+      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: nextPoints }]);
+      setPendingPoints([]);
       setDrawTool(null);
     }
   };
@@ -623,7 +633,12 @@ export function AppShell({ onBack }) {
           ))}
           {drawTool && (
             <span style={{ fontSize: 10, color: "#4A5063", fontFamily: "'JetBrains Mono', monospace" }}>
-              {pendingPoint ? "click 2nd point" : ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded === 1 ? "click point" : "click 1st point"}
+              {(() => {
+                const toolDef = ALL_DRAW_TOOLS.find((t) => t.key === drawTool);
+                const needed = toolDef?.clicksNeeded ?? 1;
+                const done = pendingPoints.length;
+                return needed === 1 ? "click point" : `click point ${done + 1} of ${needed}`;
+              })()}
             </span>
           )}
         </div>
@@ -646,7 +661,7 @@ export function AppShell({ onBack }) {
             up="#2ED9A0"
             down="#FF5C77"
             drawings={drawings}
-            pendingPoint={pendingPoint}
+            pendingPoints={pendingPoints}
             drawTool={drawTool}
             onChartClick={handleChartClick}
             onLoadMore={loadMore}

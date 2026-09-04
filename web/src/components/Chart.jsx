@@ -89,13 +89,30 @@ function toBoundsData(candles, min, max) {
  * Drawings use {time (unix seconds), price} points instead of screen
  * percentages, so they stay pinned to the right spot through pan/zoom.
  * Supported types: trendline, ray, extended, infoline, trendangle,
- * hline, horizontal (ray from click point rightward), vertical, cross,
- * fib, rectangle, text.
+ * hline, horizontal, vertical, cross, fib, fibext, fibchannel,
+ * fibtimezone, parallelchannel, disjointchannel, flattop, anchoredvwap,
+ * rectangle, text.
  *
  * onLoadMore: called (at most once per pan gesture) when the visible range
  * scrolls near the left edge of what's currently loaded — this is how
  * backfilled history further back than the initial page gets pulled in.
  */
+const FIB_EXT_LEVELS = [-0.618, -0.272, 0, 0.272, 0.618, 1, 1.272, 1.618, 2, 2.618];
+const FIB_TIME_SEQUENCE = [1, 2, 3, 5, 8, 13, 21, 34, 55];
+
+function anchoredVwapPoints(candles, anchorTimeSec) {
+  let cumPV = 0, cumV = 0;
+  const pts = [];
+  for (const c of candles) {
+    const t = toSeconds(c.t);
+    if (t < anchorTimeSec) continue;
+    const typical = (c.h + c.l + c.c) / 3;
+    cumPV += typical * c.v;
+    cumV += c.v;
+    if (cumV > 0) pts.push({ time: t, value: cumPV / cumV });
+  }
+  return pts;
+}
 export function TradingChart({
   candles,
   overlays = [],
@@ -104,7 +121,7 @@ export function TradingChart({
   up = "#2ED9A0",
   down = "#FF5C77",
   drawings = [],
-  pendingPoint,
+  pendingPoints = [],
   drawTool,
   onChartClick,
   onLoadMore,
@@ -333,7 +350,24 @@ export function TradingChart({
         el.textContent = text;
         svg.appendChild(el);
       };
+      const addPolyline = (pts, color) => {
+        if (pts.length < 2) return;
+        const el = document.createElementNS(ns, "polyline");
+        el.setAttribute("points", pts.map((p) => `${p.x},${p.y}`).join(" "));
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", "1.2");
+        svg.appendChild(el);
+      };
       const extendPoint = (x1, y1, x2, y2, factor) => ({ x: x2 + (x2 - x1) * factor, y: y2 + (y2 - y1) * factor });
+      // Linear interpolation along a line defined by two chart points, at
+      // an arbitrary x pixel coordinate — used by channel tools to find
+      // "where the trendline would be" at a third point's x position.
+      const lineYatX = (p1, p2, x) => {
+        if (p2.x === p1.x) return p1.y;
+        const t = (x - p1.x) / (p2.x - p1.x);
+        return p1.y + t * (p2.y - p1.y);
+      };
 
       drawings.forEach((d) => {
         if (d.type === "trendline") {
@@ -408,6 +442,84 @@ export function TradingChart({
             addLine(0, y, rect.width, y, d.color || "#7C5CFF", "2,2");
             addText(4, y - 4, `${(lv * 100).toFixed(1)}% ${fmt(price)}`, d.color || "#7C5CFF");
           });
+        } else if (d.type === "fibext") {
+          const a = d.points[0].price, b = d.points[1].price;
+          const dir = b - a;
+          FIB_EXT_LEVELS.forEach((lv) => {
+            const price = a + lv * dir;
+            const y = series.priceToCoordinate(price);
+            if (y == null) return;
+            addLine(0, y, rect.width, y, d.color || "#4FA9FF", "2,2");
+            addText(4, y - 4, `${(lv * 100).toFixed(1)}% ${fmt(price)}`, d.color || "#4FA9FF");
+          });
+        } else if (d.type === "fibchannel") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const far1 = extendPoint(p2.x, p2.y, p1.x, p1.y, 10);
+            const far2 = extendPoint(p1.x, p1.y, p2.x, p2.y, 10);
+            addLine(far1.x, far1.y, far2.x, far2.y, d.color || "#7C5CFF");
+            const baseYatP3 = lineYatX(p1, p2, p3.x);
+            const width = p3.y - baseYatP3; // pixel offset defining channel width
+            [0.236, 0.382, 0.5, 0.618, 0.786, 1].forEach((lv) => {
+              const offset = width * lv;
+              const oFar1 = { x: far1.x, y: far1.y + offset };
+              const oFar2 = { x: far2.x, y: far2.y + offset };
+              addLine(oFar1.x, oFar1.y, oFar2.x, oFar2.y, d.color || "#7C5CFF", "2,2");
+            });
+          }
+        } else if (d.type === "fibtimezone") {
+          const startSec = d.points[0].time;
+          const unitSec = Math.abs(d.points[1].time - d.points[0].time) || 1;
+          FIB_TIME_SEQUENCE.forEach((n) => {
+            const x = ts.timeToCoordinate(startSec + n * unitSec);
+            if (x == null) return;
+            addLine(x, 0, x, rect.height, d.color || "#F5B700", "2,3");
+            addText(x + 2, 10, `${n}`, d.color || "#F5B700");
+          });
+        } else if (d.type === "parallelchannel") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const far1 = extendPoint(p2.x, p2.y, p1.x, p1.y, 10);
+            const far2 = extendPoint(p1.x, p1.y, p2.x, p2.y, 10);
+            addLine(far1.x, far1.y, far2.x, far2.y, d.color || "#2ED9A0");
+            const baseYatP3 = lineYatX(p1, p2, p3.x);
+            const offset = p3.y - baseYatP3;
+            addLine(far1.x, far1.y + offset, far2.x, far2.y + offset, d.color || "#2ED9A0");
+          }
+        } else if (d.type === "disjointchannel") {
+          const a1 = toXY(d.points[0]);
+          const a2 = toXY(d.points[1]);
+          const b1 = toXY(d.points[2]);
+          const b2 = toXY(d.points[3]);
+          if (a1 && a2) {
+            const farA1 = extendPoint(a2.x, a2.y, a1.x, a1.y, 10);
+            const farA2 = extendPoint(a1.x, a1.y, a2.x, a2.y, 10);
+            addLine(farA1.x, farA1.y, farA2.x, farA2.y, d.color || "#F5B700");
+          }
+          if (b1 && b2) {
+            const farB1 = extendPoint(b2.x, b2.y, b1.x, b1.y, 10);
+            const farB2 = extendPoint(b1.x, b1.y, b2.x, b2.y, 10);
+            addLine(farB1.x, farB1.y, farB2.x, farB2.y, d.color || "#F5B700");
+          }
+        } else if (d.type === "flattop") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const flatY = Math.min(p1.y, p2.y); // "flat top" — higher of the two = smaller y
+            addLine(p1.x, flatY, p2.x, flatY, d.color || "#FF9F40");
+            addLine(p1.x, flatY, p3.x, p3.y, d.color || "#FF9F40");
+            addLine(p2.x, flatY, p3.x, p3.y, d.color || "#FF9F40");
+          }
+        } else if (d.type === "anchoredvwap") {
+          const pts = anchoredVwapPoints(candles, d.points[0].time)
+            .map((p) => ({ x: ts.timeToCoordinate(p.time), y: series.priceToCoordinate(p.value) }))
+            .filter((p) => p.x != null && p.y != null);
+          addPolyline(pts, d.color || "#FF9F40");
         } else if (d.type === "rectangle") {
           const p1 = toXY(d.points[0]);
           const p2 = toXY(d.points[1]);
@@ -418,8 +530,8 @@ export function TradingChart({
         }
       });
 
-      if (pendingPoint) {
-        const p = toXY(pendingPoint);
+      pendingPoints.forEach((pt) => {
+        const p = toXY(pt);
         if (p) {
           const el = document.createElementNS(ns, "circle");
           el.setAttribute("cx", p.x);
@@ -428,11 +540,11 @@ export function TradingChart({
           el.setAttribute("fill", "#F5B700");
           svg.appendChild(el);
         }
-      }
+      });
     };
     redrawDrawingsRef.current = draw;
     draw();
-  }, [drawings, pendingPoint]);
+  }, [drawings, pendingPoints, candles]);
 
   return (
     <div style={{ position: "relative", width: "100%", height, cursor: drawTool ? "crosshair" : "default" }}>
