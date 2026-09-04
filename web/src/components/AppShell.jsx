@@ -19,13 +19,62 @@ const INDICATOR_DEFS = {
 
 const COLOR_PRESETS = ["#F5B700", "#2ED9A0", "#7C5CFF", "#FF5C77", "#FF9F40", "#4FA9FF"];
 
-const DRAW_TOOLS = [
-  { key: "trendline", label: "✎ line", clicksNeeded: 2 },
-  { key: "horizontal", label: "— ray", clicksNeeded: 1 },
-  { key: "fib", label: "◇ fib", clicksNeeded: 2 },
-  { key: "rectangle", label: "▭ zone", clicksNeeded: 2 },
-  { key: "text", label: "T note", clicksNeeded: 1 },
+// Batch 1 of the full tool catalog — grouped the same way TradingView groups
+// its toolbar, so each group collapses into one icon instead of one row per
+// tool. Gann/Elliott/pattern-recognition tools are deliberately deferred —
+// everything else gets filled in over Batches 2-5.
+const DRAW_GROUPS = [
+  {
+    key: "cursor",
+    icon: "⊹",
+    label: "Cursor",
+    tools: [
+      { key: "eraser", label: "Eraser", clicksNeeded: 1 },
+    ],
+  },
+  {
+    key: "lines",
+    icon: "╱",
+    label: "Lines",
+    tools: [
+      { key: "trendline", label: "Trend Line", clicksNeeded: 2 },
+      { key: "ray", label: "Ray", clicksNeeded: 2 },
+      { key: "infoline", label: "Info Line", clicksNeeded: 2 },
+      { key: "extended", label: "Extended Line", clicksNeeded: 2 },
+      { key: "trendangle", label: "Trend Angle", clicksNeeded: 2 },
+      { key: "hline", label: "Horizontal Line", clicksNeeded: 1 },
+      { key: "horizontal", label: "Horizontal Ray", clicksNeeded: 1 },
+      { key: "vertical", label: "Vertical Line", clicksNeeded: 1 },
+      { key: "cross", label: "Cross Line", clicksNeeded: 1 },
+    ],
+  },
+  {
+    key: "fib",
+    icon: "◇",
+    label: "Fib",
+    tools: [
+      { key: "fib", label: "Fib Retracement", clicksNeeded: 2 },
+    ],
+  },
+  {
+    key: "shapes",
+    icon: "▭",
+    label: "Shapes",
+    tools: [
+      { key: "rectangle", label: "Rectangle", clicksNeeded: 2 },
+    ],
+  },
+  {
+    key: "annotation",
+    icon: "T",
+    label: "Text",
+    tools: [
+      { key: "text", label: "Text", clicksNeeded: 1 },
+    ],
+  },
 ];
+
+const ALL_DRAW_TOOLS = DRAW_GROUPS.flatMap((g) => g.tools);
 
 const EXCHANGE_LABELS = { binance: "Binance", bybit: "Bybit", bitunix: "Bitunix", mexc: "MEXC", weex: "Weex" };
 const MARKET_TYPE_LABELS = { spot: "Spot", perp: "Perp" };
@@ -194,7 +243,6 @@ function SymbolSearch({ symbols, activeLabel, onSelect }) {
 }
 
 // Small popover for adjusting a single indicator's period(s) and color.
-// Renders as a floating card anchored under the indicator's chip.
 function IndicatorSettings({ indKey, def, cfg, onChange, onClose }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -292,10 +340,56 @@ function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
   );
 }
 
+function ToolGroupDropdown({ group, activeTool, onSelect }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  const activeInGroup = group.tools.find((t) => t.key === activeTool);
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title={group.label}
+        style={{
+          display: "flex", alignItems: "center", gap: 4,
+          background: activeInGroup ? "#F5B70022" : "transparent",
+          color: activeInGroup ? "#F5B700" : "#8B93A3",
+          border: "1px solid " + (activeInGroup ? "#F5B70055" : "#232A38"),
+          borderRadius: 6, padding: "4px 8px", fontSize: 13, cursor: "pointer",
+        }}
+      >
+        <span style={{ fontSize: 13 }}>{group.icon}</span>
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10 }}>{activeInGroup ? activeInGroup.label : group.label}</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", top: "110%", left: 0, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, width: 170, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+          {group.tools.map((t) => (
+            <div
+              key={t.key}
+              onClick={() => { onSelect(t.key); setOpen(false); }}
+              style={{ padding: "8px 12px", fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: activeTool === t.key ? "#F5B700" : "#E8EAED", cursor: "pointer", background: activeTool === t.key ? "#F5B70011" : "transparent" }}
+            >
+              {t.label}
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AppShell({ onBack }) {
   const [symbols, setSymbols] = useState([]);
   const [symbolsError, setSymbolsError] = useState(null);
-  // activeSymbol is now the full row from /symbols — { pair, display,
+  // activeSymbol is the full row from /symbols — { pair, display,
   // exchange, marketType } — not just a bare pair string. That's what lets
   // us tell apart the ~5 identically-named "BTC/USDT" entries.
   const [activeSymbol, setActiveSymbol] = useState(null);
@@ -304,8 +398,6 @@ export function AppShell({ onBack }) {
     const saved = loadJSON(indicatorConfigStorageKey(), null);
     const defaults = defaultIndicatorConfig();
     if (!saved) return defaults;
-    // Merge saved values over defaults so newly-added indicators/fields
-    // (from future updates) don't end up undefined for existing users.
     const merged = {};
     Object.keys(defaults).forEach((k) => { merged[k] = { ...defaults[k], ...(saved[k] || {}) }; });
     return merged;
@@ -427,7 +519,32 @@ export function AppShell({ onBack }) {
 
   const handleChartClick = (time, price) => {
     if (!drawTool) return;
-    const toolDef = DRAW_TOOLS.find((t) => t.key === drawTool);
+
+    if (drawTool === "eraser") {
+      if (drawings.length === 0 || candles.length === 0) return;
+      const timeSpan = candles[candles.length - 1].t / 1000 - candles[0].t / 1000 || 1;
+      const prices = candles.map((c) => c.c);
+      const priceSpan = Math.max(...prices) - Math.min(...prices) || 1;
+      let closestId = null;
+      let closestDist = Infinity;
+      drawings.forEach((d) => {
+        d.points.forEach((p) => {
+          const dNorm = Math.abs(p.time - time) / timeSpan + Math.abs(p.price - price) / priceSpan;
+          if (dNorm < closestDist) {
+            closestDist = dNorm;
+            closestId = d.id;
+          }
+        });
+      });
+      // Threshold is generous since we're only comparing against a
+      // drawing's anchor points, not the full rendered line/shape.
+      if (closestId != null && closestDist < 0.08) {
+        setDrawings((prev) => prev.filter((d) => d.id !== closestId));
+      }
+      return;
+    }
+
+    const toolDef = ALL_DRAW_TOOLS.find((t) => t.key === drawTool);
     const point = { time, price };
 
     if (drawTool === "text") {
@@ -475,7 +592,6 @@ export function AppShell({ onBack }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 16px", borderBottom: "1px solid #1D232F" }}>
-        {/* Row 1 — identity + price, always visible without wrapping */}
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <button onClick={onBack} style={{ background: "none", border: "none", color: "#8B93A3", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>← back</button>
           <SymbolSearch symbols={symbols} activeLabel={activeLabel} onSelect={setActiveSymbol} />
@@ -484,7 +600,6 @@ export function AppShell({ onBack }) {
           </div>
         </div>
 
-        {/* Row 2 — timeframe + indicators, wraps freely on narrow screens */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 4 }}>
             {["1m", "15m", "1h", "4h", "1d"].map((t) => (
@@ -501,21 +616,19 @@ export function AppShell({ onBack }) {
           </div>
         </div>
 
-        {/* Row 3 — drawing tools */}
+        {/* Row 3 — drawing tools, grouped into icon dropdowns instead of one row per tool */}
         <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          {DRAW_TOOLS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => selectDrawTool(t.key)}
-              style={{ background: drawTool === t.key ? "#F5B70022" : "transparent", color: drawTool === t.key ? "#F5B700" : "#8B93A3", border: "1px solid " + (drawTool === t.key ? "#F5B70055" : "#232A38"), borderRadius: 6, padding: "4px 9px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}
-            >
-              {drawTool === t.key ? (pendingPoint ? "click 2nd pt" : t.clicksNeeded === 1 ? "click point" : "click 1st pt") : t.label}
-            </button>
+          {DRAW_GROUPS.map((group) => (
+            <ToolGroupDropdown key={group.key} group={group} activeTool={drawTool} onSelect={selectDrawTool} />
           ))}
+          {drawTool && (
+            <span style={{ fontSize: 10, color: "#4A5063", fontFamily: "'JetBrains Mono', monospace" }}>
+              {pendingPoint ? "click 2nd point" : ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded === 1 ? "click point" : "click 1st point"}
+            </span>
+          )}
         </div>
       </header>
 
-      {/* Chart region intentionally consumes the large majority of the page. */}
       <main style={{ flex: "1 1 80%", position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
         <WhalePulseLayer events={whaleEvents} candles={candles} />
         {loading ? (

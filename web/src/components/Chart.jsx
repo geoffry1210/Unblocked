@@ -88,7 +88,9 @@ function toBoundsData(candles, min, max) {
  *
  * Drawings use {time (unix seconds), price} points instead of screen
  * percentages, so they stay pinned to the right spot through pan/zoom.
- * Supported types: trendline, horizontal, fib, rectangle, text.
+ * Supported types: trendline, ray, extended, infoline, trendangle,
+ * hline, horizontal (ray from click point rightward), vertical, cross,
+ * fib, rectangle, text.
  *
  * onLoadMore: called (at most once per pan gesture) when the visible range
  * scrolls near the left edge of what's currently loaded — this is how
@@ -278,7 +280,7 @@ export function TradingChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indicatorPanes, candles]);
 
-  // ---- drawings (trendline / h-ray / fib / rectangle / text) as an SVG layer synced to chart coords ----
+  // ---- drawings — SVG layer synced to chart coords ----
   useEffect(() => {
     const draw = () => {
       const chart = chartRef.current;
@@ -331,12 +333,63 @@ export function TradingChart({
         el.textContent = text;
         svg.appendChild(el);
       };
+      const extendPoint = (x1, y1, x2, y2, factor) => ({ x: x2 + (x2 - x1) * factor, y: y2 + (y2 - y1) * factor });
 
       drawings.forEach((d) => {
         if (d.type === "trendline") {
           const p1 = toXY(d.points[0]);
           const p2 = toXY(d.points[1]);
           if (p1 && p2) addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700");
+        } else if (d.type === "ray") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            const far = extendPoint(p1.x, p1.y, p2.x, p2.y, 50);
+            addLine(p1.x, p1.y, far.x, far.y, d.color || "#F5B700");
+          }
+        } else if (d.type === "extended") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            const farA = extendPoint(p2.x, p2.y, p1.x, p1.y, 50);
+            const farB = extendPoint(p1.x, p1.y, p2.x, p2.y, 50);
+            addLine(farA.x, farA.y, farB.x, farB.y, d.color || "#F5B700");
+          }
+        } else if (d.type === "infoline") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700");
+            const priceA = d.points[0].price, priceB = d.points[1].price;
+            const diff = priceB - priceA;
+            const pct = priceA !== 0 ? (diff / priceA) * 100 : 0;
+            const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+            addText(midX + 4, midY - 6, `${diff >= 0 ? "+" : ""}${fmt(diff)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`, d.color || "#F5B700");
+          }
+        } else if (d.type === "trendangle") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700");
+            const angle = (Math.atan2(-(p2.y - p1.y), p2.x - p1.x) * 180) / Math.PI;
+            const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+            addText(midX + 4, midY - 6, `${angle.toFixed(1)}°`, d.color || "#F5B700");
+          }
+        } else if (d.type === "vertical") {
+          const x = ts.timeToCoordinate(d.points[0].time);
+          if (x != null) addLine(x, 0, x, rect.height, d.color || "#4FA9FF", "3,2");
+        } else if (d.type === "cross") {
+          const p1 = toXY(d.points[0]);
+          if (p1) {
+            addLine(0, p1.y, rect.width, p1.y, d.color || "#4FA9FF", "3,2");
+            addLine(p1.x, 0, p1.x, rect.height, d.color || "#4FA9FF", "3,2");
+          }
+        } else if (d.type === "hline") {
+          const p1 = toXY(d.points[0]);
+          if (p1) {
+            addLine(0, p1.y, rect.width, p1.y, d.color || "#2ED9A0", "4,3");
+            addText(4, p1.y - 4, fmt(d.points[0].price), d.color || "#2ED9A0");
+          }
         } else if (d.type === "horizontal") {
           const p1 = toXY(d.points[0]);
           if (p1) {
