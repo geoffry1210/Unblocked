@@ -19,13 +19,111 @@ const INDICATOR_DEFS = {
 
 const COLOR_PRESETS = ["#F5B700", "#2ED9A0", "#7C5CFF", "#FF5C77", "#FF9F40", "#4FA9FF"];
 
-const DRAW_TOOLS = [
-  { key: "trendline", label: "✎ line", clicksNeeded: 2 },
-  { key: "horizontal", label: "— ray", clicksNeeded: 1 },
-  { key: "fib", label: "◇ fib", clicksNeeded: 2 },
-  { key: "rectangle", label: "▭ zone", clicksNeeded: 2 },
-  { key: "text", label: "T note", clicksNeeded: 1 },
+// Batch 1 of the full tool catalog — grouped the same way TradingView groups
+// its toolbar, so each group collapses into one icon instead of one row per
+// tool. Gann/Elliott/pattern-recognition tools are deliberately deferred —
+// everything else gets filled in over Batches 2-5.
+const DRAW_GROUPS = [
+  {
+    key: "cursor",
+    icon: "⊹",
+    label: "Cursor",
+    tools: [
+      { key: "eraser", label: "Eraser", clicksNeeded: 1 },
+    ],
+  },
+  {
+    key: "lines",
+    icon: "╱",
+    label: "Lines",
+    tools: [
+      { key: "trendline", label: "Trend Line", clicksNeeded: 2 },
+      { key: "ray", label: "Ray", clicksNeeded: 2 },
+      { key: "infoline", label: "Info Line", clicksNeeded: 2 },
+      { key: "extended", label: "Extended Line", clicksNeeded: 2 },
+      { key: "trendangle", label: "Trend Angle", clicksNeeded: 2 },
+      { key: "hline", label: "Horizontal Line", clicksNeeded: 1 },
+      { key: "horizontal", label: "Horizontal Ray", clicksNeeded: 1 },
+      { key: "vertical", label: "Vertical Line", clicksNeeded: 1 },
+      { key: "cross", label: "Cross Line", clicksNeeded: 1 },
+      { key: "anchoredvwap", label: "Anchored VWAP", clicksNeeded: 1 },
+      { key: "flattop", label: "Flat Top/Bottom", clicksNeeded: 3 },
+    ],
+  },
+  {
+    key: "fib",
+    icon: "◇",
+    label: "Fib",
+    tools: [
+      { key: "fib", label: "Fib Retracement", clicksNeeded: 2 },
+      { key: "fibext", label: "Fib Extension", clicksNeeded: 2 },
+      { key: "fibchannel", label: "Fib Channel", clicksNeeded: 3 },
+      { key: "fibtimezone", label: "Fib Time Zone", clicksNeeded: 2 },
+    ],
+  },
+  {
+    key: "channels",
+    icon: "≋",
+    label: "Channels",
+    tools: [
+      { key: "parallelchannel", label: "Parallel Channel", clicksNeeded: 3 },
+      { key: "disjointchannel", label: "Disjoint Channel", clicksNeeded: 4 },
+    ],
+  },
+  {
+    key: "shapes",
+    icon: "▭",
+    label: "Shapes",
+    tools: [
+      { key: "rectangle", label: "Rectangle", clicksNeeded: 2 },
+      { key: "circle", label: "Circle", clicksNeeded: 2 },
+      { key: "ellipse", label: "Ellipse", clicksNeeded: 2 },
+      { key: "triangle", label: "Triangle", clicksNeeded: 3 },
+      { key: "curve", label: "Curve", clicksNeeded: 3 },
+      { key: "arc", label: "Arc", clicksNeeded: 3 },
+    ],
+  },
+  {
+    key: "annotation",
+    icon: "T",
+    label: "Text",
+    tools: [
+      { key: "text", label: "Text", clicksNeeded: 1 },
+    ],
+  },
 ];
+
+const ALL_DRAW_TOOLS = DRAW_GROUPS.flatMap((g) => g.tools);
+
+// Per-tool icons for the flyout grid — name shows only as a hover tooltip
+// (native `title` attribute), not as always-visible text.
+const TOOL_ICONS = {
+  eraser: "⌫",
+  trendline: "╱",
+  ray: "→",
+  infoline: "ℹ",
+  extended: "↔",
+  trendangle: "∠",
+  hline: "—",
+  horizontal: "⇥",
+  vertical: "|",
+  cross: "✛",
+  anchoredvwap: "Ⓥ",
+  flattop: "⊓",
+  fib: "▽",
+  fibext: "⋙",
+  fibchannel: "║",
+  fibtimezone: "⋮",
+  parallelchannel: "≡",
+  disjointchannel: "⧉",
+  rectangle: "▭",
+  circle: "○",
+  ellipse: "⬭",
+  triangle: "△",
+  curve: "∿",
+  arc: "⌒",
+  text: "T",
+};
 
 const EXCHANGE_LABELS = { binance: "Binance", bybit: "Bybit", bitunix: "Bitunix", mexc: "MEXC", weex: "Weex" };
 const MARKET_TYPE_LABELS = { spot: "Spot", perp: "Perp" };
@@ -194,7 +292,6 @@ function SymbolSearch({ symbols, activeLabel, onSelect }) {
 }
 
 // Small popover for adjusting a single indicator's period(s) and color.
-// Renders as a floating card anchored under the indicator's chip.
 function IndicatorSettings({ indKey, def, cfg, onChange, onClose }) {
   const ref = useRef(null);
   useEffect(() => {
@@ -292,10 +389,92 @@ function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
   );
 }
 
+function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) {
+  const [open, setOpen] = useState(false);
+  const [flashLabel, setFlashLabel] = useState(null);
+  const ref = useRef(null);
+  const flashTimerRef = useRef(null);
+  const activeInGroup = group.tools.find((t) => t.key === activeTool);
+  const flyoutStyle = direction === "right" ? { top: 0, left: "110%" } : { top: "110%", left: 0 };
+
+  useEffect(() => {
+    function onDocClick(e) {
+      if (ref.current && !ref.current.contains(e.target)) setOpen(false);
+    }
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, []);
+
+  useEffect(() => () => clearTimeout(flashTimerRef.current), []);
+
+  const pick = (t) => {
+    onSelect(t.key);
+    setOpen(false);
+    // Hover tooltips (the `title` attribute) never fire on touchscreens —
+    // this is the mobile equivalent: briefly show the name after tapping,
+    // as confirmation of what got selected, then fade it out on its own.
+    setFlashLabel(t.label);
+    clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlashLabel(null), 1100);
+  };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title={activeInGroup ? activeInGroup.label : group.label}
+        style={{
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+          background: activeInGroup ? "#F5B70022" : "transparent",
+          color: activeInGroup ? "#F5B700" : "#8B93A3",
+          border: "1px solid " + (activeInGroup ? "#F5B70055" : "#232A38"),
+          borderRadius: 6, padding: direction === "right" ? "8px" : "4px 8px",
+          fontSize: 15, cursor: "pointer", width: direction === "right" ? 34 : "auto",
+        }}
+      >
+        <span style={{ fontSize: 15 }}>{group.icon}</span>
+      </button>
+      {open && (
+        <div style={{ position: "absolute", ...flyoutStyle, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, padding: 6, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4, width: 168, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+          {group.tools.map((t) => (
+            <button
+              key={t.key}
+              onClick={() => pick(t)}
+              title={t.label}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: 36, height: 32, fontSize: 14, cursor: "pointer",
+                borderRadius: 6, border: "1px solid " + (activeTool === t.key ? "#F5B70055" : "transparent"),
+                background: activeTool === t.key ? "#F5B70022" : "transparent",
+                color: activeTool === t.key ? "#F5B700" : "#E8EAED",
+              }}
+            >
+              {TOOL_ICONS[t.key] || "?"}
+            </button>
+          ))}
+        </div>
+      )}
+      {!open && flashLabel && (
+        <div
+          style={{
+            position: "absolute", ...flyoutStyle, zIndex: 30,
+            background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6,
+            padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
+            color: "#F5B700", whiteSpace: "nowrap", pointerEvents: "none",
+            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+          }}
+        >
+          {flashLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AppShell({ onBack }) {
   const [symbols, setSymbols] = useState([]);
   const [symbolsError, setSymbolsError] = useState(null);
-  // activeSymbol is now the full row from /symbols — { pair, display,
+  // activeSymbol is the full row from /symbols — { pair, display,
   // exchange, marketType } — not just a bare pair string. That's what lets
   // us tell apart the ~5 identically-named "BTC/USDT" entries.
   const [activeSymbol, setActiveSymbol] = useState(null);
@@ -304,8 +483,6 @@ export function AppShell({ onBack }) {
     const saved = loadJSON(indicatorConfigStorageKey(), null);
     const defaults = defaultIndicatorConfig();
     if (!saved) return defaults;
-    // Merge saved values over defaults so newly-added indicators/fields
-    // (from future updates) don't end up undefined for existing users.
     const merged = {};
     Object.keys(defaults).forEach((k) => { merged[k] = { ...defaults[k], ...(saved[k] || {}) }; });
     return merged;
@@ -313,7 +490,7 @@ export function AppShell({ onBack }) {
 
   const [drawTool, setDrawTool] = useState(null);
   const [drawings, setDrawings] = useState([]);
-  const [pendingPoint, setPendingPoint] = useState(null);
+  const [pendingPoints, setPendingPoints] = useState([]);
 
   useEffect(() => {
     fetchSymbols()
@@ -337,7 +514,7 @@ export function AppShell({ onBack }) {
   useEffect(() => {
     if (!activeSymbol) return;
     setDrawings(loadJSON(drawingsStorageKey(activeSymbol, tf), []));
-    setPendingPoint(null);
+    setPendingPoints([]);
     setDrawTool(null);
   }, [activeSymbol, tf]);
 
@@ -421,13 +598,38 @@ export function AppShell({ onBack }) {
   const updateIndicator = (key, next) => setIndicatorConfig((c) => ({ ...c, [key]: next }));
 
   const selectDrawTool = (key) => {
-    setPendingPoint(null);
+    setPendingPoints([]);
     setDrawTool((cur) => (cur === key ? null : key));
   };
 
   const handleChartClick = (time, price) => {
     if (!drawTool) return;
-    const toolDef = DRAW_TOOLS.find((t) => t.key === drawTool);
+
+    if (drawTool === "eraser") {
+      if (drawings.length === 0 || candles.length === 0) return;
+      const timeSpan = candles[candles.length - 1].t / 1000 - candles[0].t / 1000 || 1;
+      const prices = candles.map((c) => c.c);
+      const priceSpan = Math.max(...prices) - Math.min(...prices) || 1;
+      let closestId = null;
+      let closestDist = Infinity;
+      drawings.forEach((d) => {
+        d.points.forEach((p) => {
+          const dNorm = Math.abs(p.time - time) / timeSpan + Math.abs(p.price - price) / priceSpan;
+          if (dNorm < closestDist) {
+            closestDist = dNorm;
+            closestId = d.id;
+          }
+        });
+      });
+      // Threshold is generous since we're only comparing against a
+      // drawing's anchor points, not the full rendered line/shape.
+      if (closestId != null && closestDist < 0.08) {
+        setDrawings((prev) => prev.filter((d) => d.id !== closestId));
+      }
+      return;
+    }
+
+    const toolDef = ALL_DRAW_TOOLS.find((t) => t.key === drawTool);
     const point = { time, price };
 
     if (drawTool === "text") {
@@ -439,16 +641,12 @@ export function AppShell({ onBack }) {
       return;
     }
 
-    if (toolDef.clicksNeeded === 1) {
-      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [point] }]);
-      setDrawTool(null);
-      return;
-    }
-    if (!pendingPoint) {
-      setPendingPoint(point);
+    const nextPoints = [...pendingPoints, point];
+    if (nextPoints.length < toolDef.clicksNeeded) {
+      setPendingPoints(nextPoints);
     } else {
-      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: [pendingPoint, point] }]);
-      setPendingPoint(null);
+      setDrawings((prev) => [...prev, { id: `${Date.now()}`, type: drawTool, points: nextPoints }]);
+      setPendingPoints([]);
       setDrawTool(null);
     }
   };
@@ -475,7 +673,6 @@ export function AppShell({ onBack }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%" }}>
       <header style={{ display: "flex", flexDirection: "column", gap: 8, padding: "10px 16px", borderBottom: "1px solid #1D232F" }}>
-        {/* Row 1 — identity + price, always visible without wrapping */}
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
           <button onClick={onBack} style={{ background: "none", border: "none", color: "#8B93A3", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>← back</button>
           <SymbolSearch symbols={symbols} activeLabel={activeLabel} onSelect={setActiveSymbol} />
@@ -484,7 +681,6 @@ export function AppShell({ onBack }) {
           </div>
         </div>
 
-        {/* Row 2 — timeframe + indicators, wraps freely on narrow screens */}
         <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 4 }}>
             {["1m", "15m", "1h", "4h", "1d"].map((t) => (
@@ -500,46 +696,51 @@ export function AppShell({ onBack }) {
             ))}
           </div>
         </div>
-
-        {/* Row 3 — drawing tools */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-          {DRAW_TOOLS.map((t) => (
-            <button
-              key={t.key}
-              onClick={() => selectDrawTool(t.key)}
-              style={{ background: drawTool === t.key ? "#F5B70022" : "transparent", color: drawTool === t.key ? "#F5B700" : "#8B93A3", border: "1px solid " + (drawTool === t.key ? "#F5B70055" : "#232A38"), borderRadius: 6, padding: "4px 9px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace", cursor: "pointer" }}
-            >
-              {drawTool === t.key ? (pendingPoint ? "click 2nd pt" : t.clicksNeeded === 1 ? "click point" : "click 1st pt") : t.label}
-            </button>
-          ))}
-        </div>
       </header>
 
-      {/* Chart region intentionally consumes the large majority of the page. */}
-      <main style={{ flex: "1 1 80%", position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
-        <WhalePulseLayer events={whaleEvents} candles={candles} />
-        {loading ? (
-          <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
-        ) : candles.length === 0 ? (
-          <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
-            No historical candles yet for {activeLabel} — either it needs backfilling, or the relay hasn't written any live candles for it yet.
-          </div>
-        ) : (
-          <TradingChart
-            candles={candles}
-            overlays={overlays}
-            indicatorPanes={indicatorPanes}
-            height="100%"
-            up="#2ED9A0"
-            down="#FF5C77"
-            drawings={drawings}
-            pendingPoint={pendingPoint}
-            drawTool={drawTool}
-            onChartClick={handleChartClick}
-            onLoadMore={loadMore}
-          />
-        )}
-      </main>
+      <div style={{ display: "flex", flex: "1 1 80%", minHeight: 0 }}>
+        <aside style={{ width: 44, flexShrink: 0, borderRight: "1px solid #1D232F", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 5px", overflow: "visible" }}>
+          {DRAW_GROUPS.map((group) => (
+            <ToolGroupDropdown key={group.key} group={group} activeTool={drawTool} onSelect={selectDrawTool} direction="right" />
+          ))}
+        </aside>
+
+        <main style={{ flex: 1, position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
+          {drawTool && (
+            <div style={{ position: "absolute", top: 4, left: 16, zIndex: 5, fontSize: 10, color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", background: "#0B0E1499", padding: "2px 8px", borderRadius: 4 }}>
+              {(() => {
+                const toolDef = ALL_DRAW_TOOLS.find((t) => t.key === drawTool);
+                const needed = toolDef?.clicksNeeded ?? 1;
+                const done = pendingPoints.length;
+                return needed === 1 ? "click point" : `click point ${done + 1} of ${needed}`;
+              })()}
+            </div>
+          )}
+          <WhalePulseLayer events={whaleEvents} candles={candles} />
+          {loading ? (
+            <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>loading candles...</div>
+          ) : candles.length === 0 ? (
+            <div style={{ color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", fontSize: 12, padding: 20 }}>
+              No historical candles yet for {activeLabel} — either it needs backfilling, or the relay hasn't written any live candles for it yet.
+            </div>
+          ) : (
+            <TradingChart
+              candles={candles}
+              overlays={overlays}
+              indicatorPanes={indicatorPanes}
+              height="100%"
+              up="#2ED9A0"
+              down="#FF5C77"
+              drawings={drawings}
+              pendingPoints={pendingPoints}
+              drawTool={drawTool}
+              drawToolClicksNeeded={ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded ?? 1}
+              onChartClick={handleChartClick}
+              onLoadMore={loadMore}
+            />
+          )}
+        </main>
+      </div>
 
       {drawings.length > 0 && (
         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", padding: "0 16px 8px" }}>

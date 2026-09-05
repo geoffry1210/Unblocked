@@ -88,12 +88,31 @@ function toBoundsData(candles, min, max) {
  *
  * Drawings use {time (unix seconds), price} points instead of screen
  * percentages, so they stay pinned to the right spot through pan/zoom.
- * Supported types: trendline, horizontal, fib, rectangle, text.
+ * Supported types: trendline, ray, extended, infoline, trendangle,
+ * hline, horizontal, vertical, cross, fib, fibext, fibchannel,
+ * fibtimezone, parallelchannel, disjointchannel, flattop, anchoredvwap,
+ * rectangle, text.
  *
  * onLoadMore: called (at most once per pan gesture) when the visible range
  * scrolls near the left edge of what's currently loaded — this is how
  * backfilled history further back than the initial page gets pulled in.
  */
+const FIB_EXT_LEVELS = [-0.618, -0.272, 0, 0.272, 0.618, 1, 1.272, 1.618, 2, 2.618];
+const FIB_TIME_SEQUENCE = [1, 2, 3, 5, 8, 13, 21, 34, 55];
+
+function anchoredVwapPoints(candles, anchorTimeSec) {
+  let cumPV = 0, cumV = 0;
+  const pts = [];
+  for (const c of candles) {
+    const t = toSeconds(c.t);
+    if (t < anchorTimeSec) continue;
+    const typical = (c.h + c.l + c.c) / 3;
+    cumPV += typical * c.v;
+    cumV += c.v;
+    if (cumV > 0) pts.push({ time: t, value: cumPV / cumV });
+  }
+  return pts;
+}
 export function TradingChart({
   candles,
   overlays = [],
@@ -102,8 +121,9 @@ export function TradingChart({
   up = "#2ED9A0",
   down = "#FF5C77",
   drawings = [],
-  pendingPoint,
+  pendingPoints = [],
   drawTool,
+  drawToolClicksNeeded = 1,
   onChartClick,
   onLoadMore,
 }) {
@@ -119,12 +139,15 @@ export function TradingChart({
   const onChartClickRef = useRef(onChartClick);
   const onLoadMoreRef = useRef(onLoadMore);
   const loadMoreArmedRef = useRef(true); // debounce: only fire once per approach to the edge
+  const hoverPointRef = useRef(null); // live {time, price} under the pointer — drives the rubber-band preview
+  const clicksNeededRef = useRef(drawToolClicksNeeded);
 
   useEffect(() => {
     drawToolRef.current = drawTool;
     onChartClickRef.current = onChartClick;
     onLoadMoreRef.current = onLoadMore;
-  }, [drawTool, onChartClick, onLoadMore]);
+    clicksNeededRef.current = drawToolClicksNeeded;
+  }, [drawTool, onChartClick, onLoadMore, drawToolClicksNeeded]);
 
   // ---- create chart once ----
   useLayoutEffect(() => {
@@ -160,7 +183,19 @@ export function TradingChart({
 
     const redraw = () => redrawDrawingsRef.current();
     chart.timeScale().subscribeVisibleTimeRangeChange(redraw);
-    chart.subscribeCrosshairMove(redraw);
+    // Crosshair move fires on mouse hover (desktop) and on active touch-drag
+    // (mobile) — there's no true "hover" on a phone before the first touch,
+    // but this still drives the live preview during any pointer movement,
+    // and is exactly the signal TradingView itself uses for both.
+    chart.subscribeCrosshairMove((param) => {
+      if (drawToolRef.current && param.point && param.time != null) {
+        const price = candleSeries.coordinateToPrice(param.point.y);
+        hoverPointRef.current = price == null ? null : { time: param.time, price };
+      } else {
+        hoverPointRef.current = null;
+      }
+      redraw();
+    });
 
     // Pan-to-load-more: when the visible logical range's left edge gets
     // within 20 bars of the start of loaded data, ask the parent for an
@@ -278,7 +313,7 @@ export function TradingChart({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [indicatorPanes, candles]);
 
-  // ---- drawings (trendline / h-ray / fib / rectangle / text) as an SVG layer synced to chart coords ----
+  // ---- drawings — SVG layer synced to chart coords ----
   useEffect(() => {
     const draw = () => {
       const chart = chartRef.current;
@@ -293,6 +328,7 @@ export function TradingChart({
 
       const ns = "http://www.w3.org/2000/svg";
       const ts = chart.timeScale();
+      let target = svg; // swapped to a translucent <g> during preview rendering
       const toXY = (p) => {
         const x = ts.timeToCoordinate(p.time);
         const y = series.priceToCoordinate(p.price);
@@ -307,7 +343,7 @@ export function TradingChart({
         el.setAttribute("stroke", color);
         el.setAttribute("stroke-width", "1");
         if (dash) el.setAttribute("stroke-dasharray", dash);
-        svg.appendChild(el);
+        target.appendChild(el);
       };
       const addRect = (x1, y1, x2, y2, color) => {
         const el = document.createElementNS(ns, "rect");
@@ -319,7 +355,7 @@ export function TradingChart({
         el.setAttribute("fill-opacity", "0.12");
         el.setAttribute("stroke", color);
         el.setAttribute("stroke-width", "1");
-        svg.appendChild(el);
+        target.appendChild(el);
       };
       const addText = (x, y, text, color) => {
         const el = document.createElementNS(ns, "text");
@@ -329,14 +365,113 @@ export function TradingChart({
         el.setAttribute("font-size", "11");
         el.setAttribute("font-family", "'JetBrains Mono', monospace");
         el.textContent = text;
-        svg.appendChild(el);
+        target.appendChild(el);
+      };
+      const addPolyline = (pts, color) => {
+        if (pts.length < 2) return;
+        const el = document.createElementNS(ns, "polyline");
+        el.setAttribute("points", pts.map((p) => `${p.x},${p.y}`).join(" "));
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", "1.2");
+        target.appendChild(el);
+      };
+      const addPath = (d, color, dash) => {
+        const el = document.createElementNS(ns, "path");
+        el.setAttribute("d", d);
+        el.setAttribute("fill", "none");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", "1");
+        if (dash) el.setAttribute("stroke-dasharray", dash);
+        target.appendChild(el);
+      };
+      const addEllipse = (cx, cy, rx, ry, color) => {
+        const el = document.createElementNS(ns, "ellipse");
+        el.setAttribute("cx", cx);
+        el.setAttribute("cy", cy);
+        el.setAttribute("rx", Math.abs(rx));
+        el.setAttribute("ry", Math.abs(ry));
+        el.setAttribute("fill", color);
+        el.setAttribute("fill-opacity", "0.12");
+        el.setAttribute("stroke", color);
+        el.setAttribute("stroke-width", "1");
+        target.appendChild(el);
+      };
+      // Circle through 3 points (circumcircle) — used to draw an accurate
+      // circular arc through a start, end, and "bulge" point, rather than
+      // approximating with a bezier curve.
+      const threePointCircle = (p1, p2, p3) => {
+        const d = 2 * (p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
+        if (Math.abs(d) < 1e-6) return null; // collinear — no finite circle
+        const ux = ((p1.x ** 2 + p1.y ** 2) * (p2.y - p3.y) + (p2.x ** 2 + p2.y ** 2) * (p3.y - p1.y) + (p3.x ** 2 + p3.y ** 2) * (p1.y - p2.y)) / d;
+        const uy = ((p1.x ** 2 + p1.y ** 2) * (p3.x - p2.x) + (p2.x ** 2 + p2.y ** 2) * (p1.x - p3.x) + (p3.x ** 2 + p3.y ** 2) * (p2.x - p1.x)) / d;
+        return { cx: ux, cy: uy, r: Math.hypot(p1.x - ux, p1.y - uy) };
+      };
+      const extendPoint = (x1, y1, x2, y2, factor) => ({ x: x2 + (x2 - x1) * factor, y: y2 + (y2 - y1) * factor });
+      // Linear interpolation along a line defined by two chart points, at
+      // an arbitrary x pixel coordinate — used by channel tools to find
+      // "where the trendline would be" at a third point's x position.
+      const lineYatX = (p1, p2, x) => {
+        if (p2.x === p1.x) return p1.y;
+        const t = (x - p1.x) / (p2.x - p1.x);
+        return p1.y + t * (p2.y - p1.y);
       };
 
-      drawings.forEach((d) => {
+      const renderOne = (d) => {
         if (d.type === "trendline") {
           const p1 = toXY(d.points[0]);
           const p2 = toXY(d.points[1]);
           if (p1 && p2) addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700");
+        } else if (d.type === "ray") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            const far = extendPoint(p1.x, p1.y, p2.x, p2.y, 50);
+            addLine(p1.x, p1.y, far.x, far.y, d.color || "#F5B700");
+          }
+        } else if (d.type === "extended") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            const farA = extendPoint(p2.x, p2.y, p1.x, p1.y, 50);
+            const farB = extendPoint(p1.x, p1.y, p2.x, p2.y, 50);
+            addLine(farA.x, farA.y, farB.x, farB.y, d.color || "#F5B700");
+          }
+        } else if (d.type === "infoline") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700");
+            const priceA = d.points[0].price, priceB = d.points[1].price;
+            const diff = priceB - priceA;
+            const pct = priceA !== 0 ? (diff / priceA) * 100 : 0;
+            const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+            addText(midX + 4, midY - 6, `${diff >= 0 ? "+" : ""}${fmt(diff)} (${pct >= 0 ? "+" : ""}${pct.toFixed(2)}%)`, d.color || "#F5B700");
+          }
+        } else if (d.type === "trendangle") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700");
+            const angle = (Math.atan2(-(p2.y - p1.y), p2.x - p1.x) * 180) / Math.PI;
+            const midX = (p1.x + p2.x) / 2, midY = (p1.y + p2.y) / 2;
+            addText(midX + 4, midY - 6, `${angle.toFixed(1)}°`, d.color || "#F5B700");
+          }
+        } else if (d.type === "vertical") {
+          const x = ts.timeToCoordinate(d.points[0].time);
+          if (x != null) addLine(x, 0, x, rect.height, d.color || "#4FA9FF", "3,2");
+        } else if (d.type === "cross") {
+          const p1 = toXY(d.points[0]);
+          if (p1) {
+            addLine(0, p1.y, rect.width, p1.y, d.color || "#4FA9FF", "3,2");
+            addLine(p1.x, 0, p1.x, rect.height, d.color || "#4FA9FF", "3,2");
+          }
+        } else if (d.type === "hline") {
+          const p1 = toXY(d.points[0]);
+          if (p1) {
+            addLine(0, p1.y, rect.width, p1.y, d.color || "#2ED9A0", "4,3");
+            addText(4, p1.y - 4, fmt(d.points[0].price), d.color || "#2ED9A0");
+          }
         } else if (d.type === "horizontal") {
           const p1 = toXY(d.points[0]);
           if (p1) {
@@ -355,6 +490,129 @@ export function TradingChart({
             addLine(0, y, rect.width, y, d.color || "#7C5CFF", "2,2");
             addText(4, y - 4, `${(lv * 100).toFixed(1)}% ${fmt(price)}`, d.color || "#7C5CFF");
           });
+        } else if (d.type === "fibext") {
+          const a = d.points[0].price, b = d.points[1].price;
+          const dir = b - a;
+          FIB_EXT_LEVELS.forEach((lv) => {
+            const price = a + lv * dir;
+            const y = series.priceToCoordinate(price);
+            if (y == null) return;
+            addLine(0, y, rect.width, y, d.color || "#4FA9FF", "2,2");
+            addText(4, y - 4, `${(lv * 100).toFixed(1)}% ${fmt(price)}`, d.color || "#4FA9FF");
+          });
+        } else if (d.type === "fibchannel") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const far1 = extendPoint(p2.x, p2.y, p1.x, p1.y, 10);
+            const far2 = extendPoint(p1.x, p1.y, p2.x, p2.y, 10);
+            addLine(far1.x, far1.y, far2.x, far2.y, d.color || "#7C5CFF");
+            const baseYatP3 = lineYatX(p1, p2, p3.x);
+            const width = p3.y - baseYatP3; // pixel offset defining channel width
+            [0.236, 0.382, 0.5, 0.618, 0.786, 1].forEach((lv) => {
+              const offset = width * lv;
+              const oFar1 = { x: far1.x, y: far1.y + offset };
+              const oFar2 = { x: far2.x, y: far2.y + offset };
+              addLine(oFar1.x, oFar1.y, oFar2.x, oFar2.y, d.color || "#7C5CFF", "2,2");
+            });
+          }
+        } else if (d.type === "fibtimezone") {
+          const startSec = d.points[0].time;
+          const unitSec = Math.abs(d.points[1].time - d.points[0].time) || 1;
+          FIB_TIME_SEQUENCE.forEach((n) => {
+            const x = ts.timeToCoordinate(startSec + n * unitSec);
+            if (x == null) return;
+            addLine(x, 0, x, rect.height, d.color || "#F5B700", "2,3");
+            addText(x + 2, 10, `${n}`, d.color || "#F5B700");
+          });
+        } else if (d.type === "parallelchannel") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const far1 = extendPoint(p2.x, p2.y, p1.x, p1.y, 10);
+            const far2 = extendPoint(p1.x, p1.y, p2.x, p2.y, 10);
+            addLine(far1.x, far1.y, far2.x, far2.y, d.color || "#2ED9A0");
+            const baseYatP3 = lineYatX(p1, p2, p3.x);
+            const offset = p3.y - baseYatP3;
+            addLine(far1.x, far1.y + offset, far2.x, far2.y + offset, d.color || "#2ED9A0");
+          }
+        } else if (d.type === "disjointchannel") {
+          const a1 = toXY(d.points[0]);
+          const a2 = toXY(d.points[1]);
+          const b1 = toXY(d.points[2]);
+          const b2 = toXY(d.points[3]);
+          if (a1 && a2) {
+            const farA1 = extendPoint(a2.x, a2.y, a1.x, a1.y, 10);
+            const farA2 = extendPoint(a1.x, a1.y, a2.x, a2.y, 10);
+            addLine(farA1.x, farA1.y, farA2.x, farA2.y, d.color || "#F5B700");
+          }
+          if (b1 && b2) {
+            const farB1 = extendPoint(b2.x, b2.y, b1.x, b1.y, 10);
+            const farB2 = extendPoint(b1.x, b1.y, b2.x, b2.y, 10);
+            addLine(farB1.x, farB1.y, farB2.x, farB2.y, d.color || "#F5B700");
+          }
+        } else if (d.type === "flattop") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const flatY = Math.min(p1.y, p2.y); // "flat top" — higher of the two = smaller y
+            addLine(p1.x, flatY, p2.x, flatY, d.color || "#FF9F40");
+            addLine(p1.x, flatY, p3.x, p3.y, d.color || "#FF9F40");
+            addLine(p2.x, flatY, p3.x, p3.y, d.color || "#FF9F40");
+          }
+        } else if (d.type === "anchoredvwap") {
+          const pts = anchoredVwapPoints(candles, d.points[0].time)
+            .map((p) => ({ x: ts.timeToCoordinate(p.time), y: series.priceToCoordinate(p.value) }))
+            .filter((p) => p.x != null && p.y != null);
+          addPolyline(pts, d.color || "#FF9F40");
+        } else if (d.type === "circle") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            const r = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+            addEllipse(p1.x, p1.y, r, r, d.color || "#F5B700");
+          }
+        } else if (d.type === "ellipse") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          if (p1 && p2) {
+            addEllipse((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, (p2.x - p1.x) / 2, (p2.y - p1.y) / 2, d.color || "#F5B700");
+          }
+        } else if (d.type === "triangle") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]);
+          if (p1 && p2 && p3) {
+            const el = document.createElementNS(ns, "polygon");
+            el.setAttribute("points", `${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}`);
+            el.setAttribute("fill", d.color || "#F5B700");
+            el.setAttribute("fill-opacity", "0.12");
+            el.setAttribute("stroke", d.color || "#F5B700");
+            el.setAttribute("stroke-width", "1");
+            target.appendChild(el);
+          }
+        } else if (d.type === "curve") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]); // control point — the curve bulges toward this
+          if (p1 && p2 && p3) addPath(`M ${p1.x} ${p1.y} Q ${p3.x} ${p3.y} ${p2.x} ${p2.y}`, d.color || "#F5B700");
+        } else if (d.type === "arc") {
+          const p1 = toXY(d.points[0]);
+          const p2 = toXY(d.points[1]);
+          const p3 = toXY(d.points[2]); // a point the arc passes through
+          if (p1 && p2 && p3) {
+            const circ = threePointCircle(p1, p2, p3);
+            if (circ) {
+              const cross = (p2.x - p1.x) * (p3.y - p1.y) - (p2.y - p1.y) * (p3.x - p1.x);
+              const sweepFlag = cross > 0 ? 1 : 0;
+              addPath(`M ${p1.x} ${p1.y} A ${circ.r} ${circ.r} 0 0 ${sweepFlag} ${p2.x} ${p2.y}`, d.color || "#F5B700");
+            } else {
+              addLine(p1.x, p1.y, p2.x, p2.y, d.color || "#F5B700"); // 3 points in a line — no arc possible
+            }
+          }
         } else if (d.type === "rectangle") {
           const p1 = toXY(d.points[0]);
           const p2 = toXY(d.points[1]);
@@ -363,10 +621,12 @@ export function TradingChart({
           const p1 = toXY(d.points[0]);
           if (p1 && d.text) addText(p1.x + 4, p1.y - 4, d.text, d.color || "#E8EAED");
         }
-      });
+      };
 
-      if (pendingPoint) {
-        const p = toXY(pendingPoint);
+      drawings.forEach(renderOne);
+
+      pendingPoints.forEach((pt) => {
+        const p = toXY(pt);
         if (p) {
           const el = document.createElementNS(ns, "circle");
           el.setAttribute("cx", p.x);
@@ -375,11 +635,35 @@ export function TradingChart({
           el.setAttribute("fill", "#F5B700");
           svg.appendChild(el);
         }
+      });
+
+      // ---- live rubber-band preview while placing a drawing ----
+      const hover = hoverPointRef.current;
+      if (drawToolRef.current && hover) {
+        const needed = clicksNeededRef.current;
+        const previewPoints = [...pendingPoints, hover];
+        const previewGroup = document.createElementNS(ns, "g");
+        previewGroup.setAttribute("opacity", "0.6");
+        svg.appendChild(previewGroup);
+        target = previewGroup;
+
+        if (previewPoints.length === needed) {
+          // Enough points to show the exact final shape, live.
+          renderOne({ type: drawToolRef.current, points: previewPoints, color: "#F5B700" });
+        } else if (pendingPoints.length > 0) {
+          // Not enough for the real shape yet — a simple guide line from
+          // the last placed point to the cursor is still useful feedback.
+          const last = pendingPoints[pendingPoints.length - 1];
+          const p1 = toXY(last);
+          const p2 = toXY(hover);
+          if (p1 && p2) addLine(p1.x, p1.y, p2.x, p2.y, "#F5B700", "3,2");
+        }
+        target = svg;
       }
     };
     redrawDrawingsRef.current = draw;
     draw();
-  }, [drawings, pendingPoint]);
+  }, [drawings, pendingPoints, candles]);
 
   return (
     <div style={{ position: "relative", width: "100%", height, cursor: drawTool ? "crosshair" : "default" }}>
