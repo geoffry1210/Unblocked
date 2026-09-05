@@ -391,10 +391,14 @@ function IndicatorChip({ indKey, def, cfg, onToggle, onChange }) {
 
 function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) {
   const [open, setOpen] = useState(false);
-  const [flashLabel, setFlashLabel] = useState(null);
+  // The rail button shows whichever tool was last picked from this group —
+  // matching TradingView, where the rail icon always reflects a specific
+  // real tool (defaulting to the group's first one), not a generic category
+  // glyph. Tapping the rail activates that tool directly; tapping again
+  // (while already open) lets you switch which tool the slot represents.
+  const [lastToolKey, setLastToolKey] = useState(group.tools[0].key);
   const ref = useRef(null);
-  const flashTimerRef = useRef(null);
-  const activeInGroup = group.tools.find((t) => t.key === activeTool);
+  const isActive = activeTool === lastToolKey || group.tools.some((t) => t.key === activeTool);
   const flyoutStyle = direction === "right" ? { top: 0, left: "110%" } : { top: "110%", left: 0 };
 
   useEffect(() => {
@@ -405,66 +409,55 @@ function ToolGroupDropdown({ group, activeTool, onSelect, direction = "down" }) 
     return () => document.removeEventListener("mousedown", onDocClick);
   }, []);
 
-  useEffect(() => () => clearTimeout(flashTimerRef.current), []);
-
   const pick = (t) => {
+    setLastToolKey(t.key);
     onSelect(t.key);
     setOpen(false);
-    // Hover tooltips (the `title` attribute) never fire on touchscreens —
-    // this is the mobile equivalent: briefly show the name after tapping,
-    // as confirmation of what got selected, then fade it out on its own.
-    setFlashLabel(t.label);
-    clearTimeout(flashTimerRef.current);
-    flashTimerRef.current = setTimeout(() => setFlashLabel(null), 1100);
+  };
+
+  const handleRailClick = () => {
+    // If a tool from this group is already active, tapping again opens the
+    // picker (to switch tools) instead of just re-toggling the same one.
+    if (activeTool && group.tools.some((t) => t.key === activeTool)) {
+      setOpen((o) => !o);
+    } else {
+      const def = group.tools.find((t) => t.key === lastToolKey);
+      pick(def);
+    }
   };
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
-        onClick={() => setOpen((o) => !o)}
-        title={activeInGroup ? activeInGroup.label : group.label}
+        onClick={handleRailClick}
+        onContextMenu={(e) => { e.preventDefault(); setOpen((o) => !o); }}
+        title={group.tools.find((t) => t.key === lastToolKey)?.label}
         style={{
-          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
-          background: activeInGroup ? "#F5B70022" : "transparent",
-          color: activeInGroup ? "#F5B700" : "#8B93A3",
-          border: "1px solid " + (activeInGroup ? "#F5B70055" : "#232A38"),
-          borderRadius: 6, padding: direction === "right" ? "8px" : "4px 8px",
-          fontSize: 15, cursor: "pointer", width: direction === "right" ? 34 : "auto",
+          display: "flex", alignItems: "center", justifyContent: "center",
+          background: isActive ? "#F5B70022" : "transparent",
+          color: isActive ? "#F5B700" : "#8B93A3",
+          border: "1px solid " + (isActive ? "#F5B70055" : "#232A38"),
+          borderRadius: 6, padding: "8px", fontSize: 15, cursor: "pointer", width: 34,
         }}
       >
-        <span style={{ fontSize: 15 }}>{group.icon}</span>
+        {TOOL_ICONS[lastToolKey] || group.icon}
       </button>
       {open && (
-        <div style={{ position: "absolute", ...flyoutStyle, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, padding: 6, display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 4, width: 168, boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+        <div style={{ position: "absolute", ...flyoutStyle, zIndex: 30, background: "#191F2A", border: "1px solid #2A3140", borderRadius: 8, width: 210, overflow: "hidden", boxShadow: "0 8px 24px rgba(0,0,0,0.4)" }}>
+          <div style={{ padding: "6px 12px", fontSize: 10, color: "#4A5063", fontFamily: "'JetBrains Mono', monospace", letterSpacing: 1, borderBottom: "1px solid #232A38" }}>{group.label.toUpperCase()}</div>
           {group.tools.map((t) => (
-            <button
+            <div
               key={t.key}
               onClick={() => pick(t)}
-              title={t.label}
               style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 36, height: 32, fontSize: 14, cursor: "pointer",
-                borderRadius: 6, border: "1px solid " + (activeTool === t.key ? "#F5B70055" : "transparent"),
-                background: activeTool === t.key ? "#F5B70022" : "transparent",
-                color: activeTool === t.key ? "#F5B700" : "#E8EAED",
+                display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", cursor: "pointer",
+                background: activeTool === t.key ? "#F5B70011" : "transparent",
               }}
             >
-              {TOOL_ICONS[t.key] || "?"}
-            </button>
+              <span style={{ width: 18, textAlign: "center", fontSize: 14, color: activeTool === t.key ? "#F5B700" : "#8B93A3" }}>{TOOL_ICONS[t.key] || "?"}</span>
+              <span style={{ fontSize: 12, fontFamily: "'JetBrains Mono', monospace", color: activeTool === t.key ? "#F5B700" : "#E8EAED" }}>{t.label}</span>
+            </div>
           ))}
-        </div>
-      )}
-      {!open && flashLabel && (
-        <div
-          style={{
-            position: "absolute", ...flyoutStyle, zIndex: 30,
-            background: "#191F2A", border: "1px solid #2A3140", borderRadius: 6,
-            padding: "5px 10px", fontSize: 11, fontFamily: "'JetBrains Mono', monospace",
-            color: "#F5B700", whiteSpace: "nowrap", pointerEvents: "none",
-            boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-          }}
-        >
-          {flashLabel}
         </div>
       )}
     </div>
@@ -491,6 +484,9 @@ export function AppShell({ onBack }) {
   const [drawTool, setDrawTool] = useState(null);
   const [drawings, setDrawings] = useState([]);
   const [pendingPoints, setPendingPoints] = useState([]);
+  const [magnetOn, setMagnetOn] = useState(false);
+  const [locked, setLocked] = useState(false);
+  const [drawingsHidden, setDrawingsHidden] = useState(false);
 
   useEffect(() => {
     fetchSymbols()
@@ -605,8 +601,26 @@ export function AppShell({ onBack }) {
   const handleChartClick = (time, price) => {
     if (!drawTool) return;
 
+    // Magnet mode: snap to the nearest candle's exact time and its close
+    // price, instead of wherever the tap/click landed pixel-wise. Matches
+    // TradingView's magnet behavior for the common case (snapping to close,
+    // not distinguishing which of OHLC is nearest).
+    if (magnetOn && candles.length > 0) {
+      let nearest = candles[0];
+      let nearestDist = Infinity;
+      for (const c of candles) {
+        const d = Math.abs(c.t / 1000 - time);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearest = c;
+        }
+      }
+      time = nearest.t / 1000;
+      price = nearest.c;
+    }
+
     if (drawTool === "eraser") {
-      if (drawings.length === 0 || candles.length === 0) return;
+      if (locked || drawings.length === 0 || candles.length === 0) return;
       const timeSpan = candles[candles.length - 1].t / 1000 - candles[0].t / 1000 || 1;
       const prices = candles.map((c) => c.c);
       const priceSpan = Math.max(...prices) - Math.min(...prices) || 1;
@@ -700,9 +714,54 @@ export function AppShell({ onBack }) {
 
       <div style={{ display: "flex", flex: "1 1 80%", minHeight: 0 }}>
         <aside style={{ width: 44, flexShrink: 0, borderRight: "1px solid #1D232F", display: "flex", flexDirection: "column", alignItems: "center", gap: 4, padding: "8px 5px", overflow: "visible" }}>
+          <button
+            onClick={() => { setDrawTool(null); setPendingPoints([]); }}
+            title="Cursor"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", width: 34, padding: "8px", fontSize: 15, cursor: "pointer",
+              background: !drawTool ? "#F5B70022" : "transparent",
+              color: !drawTool ? "#F5B700" : "#8B93A3",
+              border: "1px solid " + (!drawTool ? "#F5B70055" : "#232A38"),
+              borderRadius: 6,
+            }}
+          >
+            ⊹
+          </button>
+
           {DRAW_GROUPS.map((group) => (
             <ToolGroupDropdown key={group.key} group={group} activeTool={drawTool} onSelect={selectDrawTool} direction="right" />
           ))}
+
+          <div style={{ width: "70%", height: 1, background: "#1D232F", margin: "4px 0" }} />
+
+          <button
+            onClick={() => setMagnetOn((v) => !v)}
+            title="Magnet mode — snap drawings to candle close"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34, padding: "8px", fontSize: 14, cursor: "pointer", background: magnetOn ? "#F5B70022" : "transparent", color: magnetOn ? "#F5B700" : "#8B93A3", border: "1px solid " + (magnetOn ? "#F5B70055" : "#232A38"), borderRadius: 6 }}
+          >
+            ⊚
+          </button>
+          <button
+            onClick={() => setLocked((v) => !v)}
+            title={locked ? "Locked — drawings can't be erased" : "Unlocked"}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34, padding: "8px", fontSize: 14, cursor: "pointer", background: locked ? "#F5B70022" : "transparent", color: locked ? "#F5B700" : "#8B93A3", border: "1px solid " + (locked ? "#F5B70055" : "#232A38"), borderRadius: 6 }}
+          >
+            {locked ? "🔒" : "🔓"}
+          </button>
+          <button
+            onClick={() => setDrawingsHidden((v) => !v)}
+            title={drawingsHidden ? "Drawings hidden — tap to show" : "Hide drawings"}
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34, padding: "8px", fontSize: 14, cursor: "pointer", background: "transparent", color: drawingsHidden ? "#4A5063" : "#8B93A3", border: "1px solid #232A38", borderRadius: 6 }}
+          >
+            👁
+          </button>
+          <button
+            onClick={() => { if (drawings.length > 0 && window.confirm(`Remove all ${drawings.length} drawings?`)) setDrawings([]); }}
+            title="Remove all drawings"
+            style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 34, padding: "8px", fontSize: 14, cursor: "pointer", background: "transparent", color: "#8B93A3", border: "1px solid #232A38", borderRadius: 6 }}
+          >
+            🗑
+          </button>
         </aside>
 
         <main style={{ flex: 1, position: "relative", padding: "12px 16px 4px", minHeight: 0, display: "flex", flexDirection: "column" }}>
@@ -731,7 +790,7 @@ export function AppShell({ onBack }) {
               height="100%"
               up="#2ED9A0"
               down="#FF5C77"
-              drawings={drawings}
+              drawings={drawingsHidden ? [] : drawings}
               pendingPoints={pendingPoints}
               drawTool={drawTool}
               drawToolClicksNeeded={ALL_DRAW_TOOLS.find((t) => t.key === drawTool)?.clicksNeeded ?? 1}
