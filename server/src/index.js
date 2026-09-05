@@ -11,6 +11,7 @@ import { startWhaleAlertPoller } from "./services/whaleAlertPoller.js";
 import candlesRouter from "./routes/candles.js";
 import symbolsRouter from "./routes/symbols.js";
 import adminBackfillRouter from "./routes/adminBackfill.js";
+import adminSymbolsRouter from "./routes/adminSymbols.js";
 import { pool } from "./db/pool.js";
 
 const app = express();
@@ -21,6 +22,7 @@ app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/candles", candlesRouter);
 app.use("/symbols", symbolsRouter);
 app.use("/internal/backfill", adminBackfillRouter);
+app.use("/internal/symbols", adminSymbolsRouter);
 
 const server = createServer(app);
 
