@@ -10,6 +10,7 @@ import { attachWebSocketServer } from "./services/wsServer.js";
 import { startWhaleAlertPoller } from "./services/whaleAlertPoller.js";
 import candlesRouter from "./routes/candles.js";
 import symbolsRouter from "./routes/symbols.js";
+import adminBackfillRouter from "./routes/adminBackfill.js";
 import { pool } from "./db/pool.js";
 
 const app = express();
@@ -19,6 +20,7 @@ app.use(express.json());
 app.get("/health", (_req, res) => res.json({ ok: true }));
 app.use("/candles", candlesRouter);
 app.use("/symbols", symbolsRouter);
+app.use("/internal/backfill", adminBackfillRouter);
 
 const server = createServer(app);
 
