@@ -3,9 +3,15 @@
 //
 // Bybit's kline interval strings differ from Binance's ("60" not "1h",
 // "D" not "1d") — TF_MAP handles the translation both ways.
+//
+// Sharded across multiple connections once the symbol list grows large
+// (see ../sharding.js) — a single connection carrying subscriptions for
+// hundreds of symbols risks exceeding Bybit's per-connection limits even
+// though individual subscribe messages are already chunked below.
 
 import WebSocket from "ws";
 import { upsertCandle, getActiveSymbols } from "../../db/candles.js";
+import { startSharded } from "./sharding.js";
 
 const RECONNECT_DELAY_MS = 5000;
 const PING_INTERVAL_MS = 20000;
@@ -26,15 +32,17 @@ export async function startBybitRelay({ marketType, broadcastCandle }) {
     console.warn(`No active bybit/${marketType} symbols — skipping (seed the symbols table to enable)`);
     return;
   }
-  connect(marketType, symbols, broadcastCandle);
+  startSharded(symbols, TIMEFRAMES.length, (shardSymbols, shardIndex) => connect(marketType, shardSymbols, shardIndex, broadcastCandle), {
+    label: `Bybit ${marketType} relay`,
+  });
 }
 
-function connect(marketType, symbols, broadcastCandle) {
+function connect(marketType, symbols, shardIndex, broadcastCandle) {
   const ws = new WebSocket(HOSTS[marketType]);
   let pingTimer;
 
   ws.on("open", () => {
-    console.log(`Bybit ${marketType} relay connected — ${symbols.length} symbols x ${TIMEFRAMES.length} timeframes`);
+    console.log(`Bybit ${marketType} relay [shard ${shardIndex}] connected — ${symbols.length} symbols x ${TIMEFRAMES.length} timeframes`);
     const args = [];
     for (const symbol of symbols) {
       for (const tf of TIMEFRAMES) {
@@ -79,12 +87,12 @@ function connect(marketType, symbols, broadcastCandle) {
 
   ws.on("close", () => {
     clearInterval(pingTimer);
-    console.warn(`Bybit ${marketType} relay disconnected — reconnecting in ${RECONNECT_DELAY_MS}ms`);
-    setTimeout(() => connect(marketType, symbols, broadcastCandle), RECONNECT_DELAY_MS);
+    console.warn(`Bybit ${marketType} relay [shard ${shardIndex}] disconnected — reconnecting in ${RECONNECT_DELAY_MS}ms`);
+    setTimeout(() => connect(marketType, symbols, shardIndex, broadcastCandle), RECONNECT_DELAY_MS);
   });
 
   ws.on("error", (err) => {
-    console.error(`Bybit ${marketType} relay error`, err.message);
+    console.error(`Bybit ${marketType} relay [shard ${shardIndex}] error`, err.message);
     ws.close();
   });
 }

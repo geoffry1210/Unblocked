@@ -11,9 +11,15 @@
 // lag the real close by up to ~500ms (their push interval). This is a
 // reasonable heuristic, not a guarantee — worth knowing if exact candle
 // close timing ever matters here.
+//
+// Sharded across multiple connections once the symbol list grows large
+// (see ../sharding.js) — see binance.js's comment for the general
+// rationale; applies equally here now that Bitunix pairs aren't limited
+// to a small curated list.
 
 import WebSocket from "ws";
 import { upsertCandle, getActiveSymbols } from "../../db/candles.js";
+import { startSharded } from "./sharding.js";
 
 const RECONNECT_DELAY_MS = 5000;
 const PING_INTERVAL_MS = 20000;
@@ -31,10 +37,12 @@ export async function startBitunixRelay({ broadcastCandle }) {
     console.warn("No active bitunix/perp symbols — skipping (seed the symbols table to enable)");
     return;
   }
-  connect(symbols, broadcastCandle);
+  startSharded(symbols, TIMEFRAMES.length, (shardSymbols, shardIndex) => connect(shardSymbols, shardIndex, broadcastCandle), {
+    label: "Bitunix perp relay",
+  });
 }
 
-function connect(symbols, broadcastCandle) {
+function connect(symbols, shardIndex, broadcastCandle) {
   const ws = new WebSocket(WS_URL);
   let pingTimer;
   // key `${symbol}:${tf}` -> last seen {bucket, candle}, so we can detect
@@ -42,7 +50,7 @@ function connect(symbols, broadcastCandle) {
   const lastSeen = new Map();
 
   ws.on("open", () => {
-    console.log(`Bitunix perp relay connected — ${symbols.length} symbols x ${TIMEFRAMES.length} timeframes`);
+    console.log(`Bitunix perp relay [shard ${shardIndex}] connected — ${symbols.length} symbols x ${TIMEFRAMES.length} timeframes`);
     const args = [];
     for (const symbol of symbols) {
       for (const tf of TIMEFRAMES) {
@@ -89,12 +97,12 @@ function connect(symbols, broadcastCandle) {
 
   ws.on("close", () => {
     clearInterval(pingTimer);
-    console.warn(`Bitunix perp relay disconnected — reconnecting in ${RECONNECT_DELAY_MS}ms`);
-    setTimeout(() => connect(symbols, broadcastCandle), RECONNECT_DELAY_MS);
+    console.warn(`Bitunix perp relay [shard ${shardIndex}] disconnected — reconnecting in ${RECONNECT_DELAY_MS}ms`);
+    setTimeout(() => connect(symbols, shardIndex, broadcastCandle), RECONNECT_DELAY_MS);
   });
 
   ws.on("error", (err) => {
-    console.error("Bitunix perp relay error", err.message);
+    console.error(`Bitunix perp relay [shard ${shardIndex}] error`, err.message);
     ws.close();
   });
 }

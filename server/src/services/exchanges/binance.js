@@ -3,27 +3,28 @@
 // Both products expose the identical combined-stream kline schema; only the
 // WebSocket host differs (spot: stream.binance.com, perp: fstream.binance.com).
 // Verified against Binance's public API docs.
+//
+// IMPORTANT: streams are subscribed via the SUBSCRIBE method sent after
+// connecting, NOT embedded in the connection URL. The URL-embedded
+// combined-stream style (.../stream?streams=a/b/c) works fine for a
+// handful of symbols but produces a URL far too long to open once the
+// symbol list grows into the hundreds (every USDT/USD/USDC pair) — this
+// used to be how it worked here and quietly broke at that scale. Sharding
+// (see ../sharding.js) further splits large symbol lists across several
+// connections so no single connection's subscription count gets close to
+// Binance's documented per-connection ceiling.
 
 import WebSocket from "ws";
 import { upsertCandle, getActiveSymbols } from "../../db/candles.js";
+import { startSharded } from "./sharding.js";
 
 const TIMEFRAMES = ["1m", "15m", "1h", "4h", "1d"];
 const RECONNECT_DELAY_MS = 5000;
 
 const HOSTS = {
-  spot: "wss://stream.binance.com:9443",
-  perp: "wss://fstream.binance.com",
+  spot: "wss://stream.binance.com:9443/stream",
+  perp: "wss://fstream.binance.com/stream",
 };
-
-function buildStreamUrl(marketType, symbols) {
-  const streams = [];
-  for (const symbol of symbols) {
-    for (const tf of TIMEFRAMES) {
-      streams.push(`${symbol.toLowerCase()}@kline_${tf}`);
-    }
-  }
-  return `${HOSTS[marketType]}/stream?streams=${streams.join("/")}`;
-}
 
 export async function startBinanceRelay({ marketType, broadcastCandle }) {
   const symbols = await getActiveSymbols("binance", marketType);
@@ -31,15 +32,29 @@ export async function startBinanceRelay({ marketType, broadcastCandle }) {
     console.warn(`No active binance/${marketType} symbols — skipping (seed the symbols table to enable)`);
     return;
   }
-  connect(marketType, symbols, broadcastCandle);
+  startSharded(symbols, TIMEFRAMES.length, (shardSymbols, shardIndex) => connect(marketType, shardSymbols, shardIndex, broadcastCandle), {
+    label: `Binance ${marketType} relay`,
+  });
 }
 
-function connect(marketType, symbols, broadcastCandle) {
-  const url = buildStreamUrl(marketType, symbols);
-  const ws = new WebSocket(url);
+function connect(marketType, symbols, shardIndex, broadcastCandle) {
+  const ws = new WebSocket(HOSTS[marketType]);
 
   ws.on("open", () => {
-    console.log(`Binance ${marketType} relay connected — ${symbols.length} symbols x ${TIMEFRAMES.length} timeframes`);
+    console.log(`Binance ${marketType} relay [shard ${shardIndex}] connected — ${symbols.length} symbols x ${TIMEFRAMES.length} timeframes`);
+    const streams = [];
+    for (const symbol of symbols) {
+      for (const tf of TIMEFRAMES) {
+        streams.push(`${symbol.toLowerCase()}@kline_${tf}`);
+      }
+    }
+    // Binance accepts a single SUBSCRIBE call with all params, but chunk
+    // anyway to stay well clear of any per-message size/rate quirks —
+    // matches the same defensive chunking Bybit/Bitunix already use.
+    let id = 1;
+    for (let i = 0; i < streams.length; i += 50) {
+      ws.send(JSON.stringify({ method: "SUBSCRIBE", params: streams.slice(i, i + 50), id: id++ }));
+    }
   });
 
   ws.on("message", async (raw) => {
@@ -68,12 +83,12 @@ function connect(marketType, symbols, broadcastCandle) {
   });
 
   ws.on("close", () => {
-    console.warn(`Binance ${marketType} relay disconnected — reconnecting in ${RECONNECT_DELAY_MS}ms`);
-    setTimeout(() => connect(marketType, symbols, broadcastCandle), RECONNECT_DELAY_MS);
+    console.warn(`Binance ${marketType} relay [shard ${shardIndex}] disconnected — reconnecting in ${RECONNECT_DELAY_MS}ms`);
+    setTimeout(() => connect(marketType, symbols, shardIndex, broadcastCandle), RECONNECT_DELAY_MS);
   });
 
   ws.on("error", (err) => {
-    console.error(`Binance ${marketType} relay error`, err.message);
+    console.error(`Binance ${marketType} relay [shard ${shardIndex}] error`, err.message);
     ws.close();
   });
 }
